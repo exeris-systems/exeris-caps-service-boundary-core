@@ -1,0 +1,8 @@
+version: 2
+repository: exeris-caps-service-boundary-core
+
+imports:
+  - bundle: exeris-agents
+    version: 1.3.0
+    ref: 628cf11b4c4d3ecafadfe07b18764e75598ebd46
+    sha256: sha256:4a9e2d84b51a4ff0adabb047942aa6ff1b632063f26e5e8399388c3bcfd8746f

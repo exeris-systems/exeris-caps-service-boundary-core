@@ -1,0 +1,38 @@
+{
+  "schemaVersion" : 2,
+  "stamp" : {
+    "validated" : true,
+    "compositionVersion" : "0.0.0",
+    "contentBinding" : "sha256:40f9fe8a23a71ab12ecfd029aa30cc75204edd1ffe147fa80ac795d66ab414ba"
+  },
+  "modules" : [
+    {
+      "name" : "ServiceBoundaryCoreModule",
+      "packageName" : "eu.exeris.caps.serviceboundarycore",
+      "qualifiedName" : "eu.exeris.caps.serviceboundarycore.ServiceBoundaryCoreModule",
+      "module" : {
+        "provides" : [
+          {
+            "service" : "eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRegistry",
+            "version" : "1.0.0"
+          },
+          {
+            "service" : "eu.exeris.caps.serviceboundarycore.api.ServiceLifecycleHooks",
+            "version" : "1.0.0"
+          },
+          {
+            "service" : "eu.exeris.caps.serviceboundarycore.api.RequestContext",
+            "version" : "1.0.0"
+          }
+        ],
+        "requires" : [ ],
+        "lifecycleOwner" : "eu.exeris.caps.serviceboundarycore.ServiceBoundaryCoreModule"
+      }
+    }
+  ],
+  "resolutions" : [ ],
+  "initOrder" : [
+    "eu.exeris.caps.serviceboundarycore.ServiceBoundaryCoreModule"
+  ],
+  "warnings" : [ ]
+}

@@ -1,0 +1,109 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: mvn verify (JDK ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['25', '26']
+
+    steps:
+      - name: Checkout exeris-caps-service-boundary-core
+        uses: actions/checkout@v4
+        with:
+          path: exeris-caps-service-boundary-core
+
+      - name: Checkout exeris-sdk (v0.11.0)
+        uses: actions/checkout@v4
+        with:
+          repository: exeris-systems/exeris-sdk
+          ref: v0.11.0
+          path: exeris-sdk
+
+      - name: Checkout exeris-kernel (v0.11.0 — for kernel-spi)
+        uses: actions/checkout@v4
+        with:
+          repository: exeris-systems/exeris-kernel
+          ref: v0.11.0
+          path: exeris-kernel
+
+      - name: Checkout exeris-tooling (v0.8.0)
+        uses: actions/checkout@v4
+        with:
+          repository: exeris-systems/exeris-tooling
+          ref: v0.8.0
+          path: exeris-tooling
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Install exeris-sdk to local repo
+        working-directory: exeris-sdk
+        run: mvn -B -ntp -DskipTests -Djapicmp.skip=true install
+
+      - name: Install exeris-kernel-spi to local repo
+        working-directory: exeris-kernel
+        run: mvn -B -ntp -DskipTests install -pl exeris-kernel-bom,exeris-kernel-spi -am
+
+      - name: Install exeris-tooling to local repo (kernel-free reactor)
+        working-directory: exeris-tooling
+        run: mvn -B -ntp -DskipTests install -pl exeris-tooling-bom,exeris-processor,exeris-codegen-maven-plugin -am
+
+      - name: Seed capability metadata (first pass, codegen skipped)
+        working-directory: exeris-caps-service-boundary-core
+        run: mvn -B -ntp compile -Dexeris.codegen.skip=true
+
+      - name: mvn verify (second pass — generates, validates, scans the Wall)
+        working-directory: exeris-caps-service-boundary-core
+        run: mvn -B -ntp verify
+
+      - name: Assert the cap manifest was emitted and stamped
+        working-directory: exeris-caps-service-boundary-core
+        run: |
+          MANIFEST=$(find . -name cap-manifest.json -print -quit)
+          if [ -z "$MANIFEST" ]; then
+            echo "::error::no cap-manifest.json was emitted — the capability pass did not run"
+            exit 1
+          fi
+          echo "found: $MANIFEST"
+          cat "$MANIFEST"
+          python3 - "$MANIFEST" <<'PY'
+          import json, re, sys
+          m = json.load(open(sys.argv[1]))
+          stamp = m.get("stamp") or {}
+          assert m.get("schemaVersion") == 2, f"unexpected schemaVersion: {m.get('schemaVersion')}"
+          assert stamp.get("validated") is True, "stamp is not validated"
+          assert re.fullmatch(r"sha256:[0-9a-f]{64}", stamp.get("contentBinding") or ""), \
+              f"bad contentBinding: {stamp.get('contentBinding')!r}"
+          names = [mod.get("qualifiedName") for mod in m.get("modules") or []]
+          assert "eu.exeris.caps.serviceboundarycore.ServiceBoundaryCoreModule" in names, \
+              f"module missing from manifest: {names}"
+          print("manifest OK — validated stamp, sha256 binding, module present")
+          PY
+
+      - name: Assert the committed manifest matches what this build regenerated
+        working-directory: exeris-caps-service-boundary-core
+        run: |
+          DRIFT=$(git status --porcelain --untracked-files=all -- src/main/generated/)
+          if [ -n "$DRIFT" ]; then
+            echo "$DRIFT"
+            git diff -- src/main/generated/ || true
+            echo "::error::src/main/generated/ does not match what this build produced"
+            exit 1
+          fi
+          echo "committed generated tree matches this build's output"

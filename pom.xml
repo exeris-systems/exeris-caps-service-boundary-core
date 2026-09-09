@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>eu.exeris.caps</groupId>
+    <artifactId>exeris-caps-service-boundary-core</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>Exeris Caps :: Service Boundary Core</name>
+    <description>
+        Substrate aggregate capability for the Service Boundary family. Provides
+        ApiSurfaceRegistry, ServiceLifecycleHooks, and RequestContext against
+        kernel HTTP, Security, and Context SPIs. Sits directly on kernel SPIs;
+        backs Layer 4 platform caps and Layer 5 domain primitives.
+    </description>
+    <url>https://github.com/exeris-systems/exeris-caps-service-boundary-core</url>
+    <inceptionYear>2026</inceptionYear>
+
+    <organization>
+        <name>Exeris Systems</name>
+        <url>https://exeris.eu</url>
+    </organization>
+
+    <!-- commercial per ADR-023 — source-available under the Exeris Commercial License.
+         Production use requires an active Platform SKU subscription or Platform-tier license.
+         Source is public for audit, evaluation, and Code Detachment fork purposes. -->
+    <licenses>
+        <license>
+            <name>Exeris Commercial License</name>
+            <url>https://exeris.eu/licenses/commercial-1.1.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- JDK 25 LTS, matching the ecosystem baseline (kernel ADR-066, SDK ADR-069,
+             tooling U1). Deliberately no preview flag anywhere: a preview-stamped
+             class re-pins this jar to one exact JDK major, which is the thing the
+             preview-clean baseline exists to avoid. -->
+        <maven.compiler.release>25</maven.compiler.release>
+
+        <exeris.sdk.version>0.11.0</exeris.sdk.version>
+        <exeris.kernel.version>0.11.0</exeris.kernel.version>
+        <exeris.tooling.version>0.8.0</exeris.tooling.version>
+
+        <junit.version>5.11.4</junit.version>
+        <assertj.version>3.27.7</assertj.version>
+    </properties>
+
+    <dependencies>
+        <!-- provided, not compile: every Exeris annotation is @Retention(SOURCE), so it
+             is erased at javac and cannot be read at runtime. Taking it at compile scope
+             would put a jar on consumers' runtime classpath that nothing can ever load
+             from. -->
+        <dependency>
+            <groupId>eu.exeris</groupId>
+            <artifactId>exeris-sdk-annotations</artifactId>
+            <version>${exeris.sdk.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- CapabilityLifecycleHooks runtime interface for the conductor -->
+        <dependency>
+            <groupId>eu.exeris</groupId>
+            <artifactId>exeris-sdk-composition-lifecycle</artifactId>
+            <version>${exeris.sdk.version}</version>
+        </dependency>
+
+        <!-- Kernel SPI: HTTP, Security, Context -->
+        <dependency>
+            <groupId>eu.exeris</groupId>
+            <artifactId>exeris-kernel-spi</artifactId>
+            <version>${exeris.kernel.version}</version>
+        </dependency>
+
+        <!-- JUnit 5 + AssertJ only. This is the ADR-058 dependency contract for the
+             generated-test channel, and holding hand-written tests to it too keeps the
+             two indistinguishable to the build. No mocking framework: doubles are
+             written (or emitted), never mocked. -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.16.0</version>
+                <configuration>
+                    <release>${maven.compiler.release}</release>
+                    <!-- The processor is declared here rather than as a dependency so it
+                         never reaches the compile classpath — it runs at javac time and
+                         has no business being visible to this cap's own sources. -->
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>eu.exeris.tooling</groupId>
+                            <artifactId>exeris-processor</artifactId>
+                            <version>${exeris.tooling.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>eu.exeris.tooling</groupId>
+                <artifactId>exeris-codegen-maven-plugin</artifactId>
+                <version>${exeris.tooling.version}</version>
+                <executions>
+                    <!-- BOTH goals, and the pairing is load-bearing rather than tidy.
+                         `generate` runs at generate-sources; `verify-capabilities` runs
+                         at process-classes to validate the graph and scan for Wall violations. -->
+                    <execution>
+                        <goals>
+                            <goal>generate</goal>
+                            <goal>verify-capabilities</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.6</version>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

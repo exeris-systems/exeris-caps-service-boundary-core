@@ -1,0 +1,10 @@
+target/
+*.class
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Generated output is committed (L1) per the exeris-tooling detachment story, so
+# src/main/generated is deliberately NOT ignored. cap-manifest.json is emitted into
+# the generated tree and is likewise tracked — it is the artefact a SKU consumes.

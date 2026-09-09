@@ -1,0 +1,314 @@
+package eu.exeris.caps.serviceboundarycore.internal;
+
+import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRoute;
+import eu.exeris.caps.serviceboundarycore.api.RouteMatch;
+import eu.exeris.kernel.spi.http.HttpExchange;
+import eu.exeris.kernel.spi.http.HttpMethod;
+import eu.exeris.kernel.spi.http.HttpRequest;
+import eu.exeris.kernel.spi.http.HttpResponse;
+import eu.exeris.kernel.spi.http.HttpStatus;
+import eu.exeris.kernel.spi.http.HttpTypedResponse;
+import eu.exeris.kernel.spi.http.HttpVersion;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+@DisplayName("DefaultApiSurfaceRegistry")
+class DefaultApiSurfaceRegistryTest {
+
+    private DefaultApiSurfaceRegistry registry;
+
+    @BeforeEach
+    void setUp() {
+        registry = new DefaultApiSurfaceRegistry();
+    }
+
+    @Nested
+    @DisplayName("route registration and lookup")
+    class RouteRegistration {
+
+        @Test
+        @DisplayName("registers and matches an exact route")
+        void matchesExactRoute() {
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/api/v1/health")
+                    .actionName("Health#check")
+                    .handler(ex -> ex.respond(HttpStatus.OK))
+                    .build();
+
+            registry.registerRoute(route);
+
+            assertThat(registry.routeCount()).isEqualTo(1);
+            assertThat(registry.routes()).containsExactly(route);
+
+            Optional<RouteMatch> match = registry.matchRoute(HttpMethod.GET, "/api/v1/health");
+            assertThat(match).isPresent();
+            assertThat(match.get().route()).isEqualTo(route);
+            assertThat(match.get().pathParams()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("registers and matches a parameterized route with parameter extraction")
+        void matchesParameterizedRoute() {
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/api/v1/orders/{orderId}/items/{itemId}")
+                    .actionName("Order#getItem")
+                    .handler(ex -> ex.respond(HttpStatus.OK))
+                    .build();
+
+            registry.registerRoute(route);
+
+            Optional<RouteMatch> match = registry.matchRoute(HttpMethod.GET, "/api/v1/orders/ord-123/items/item-456");
+            assertThat(match).isPresent();
+            assertThat(match.get().route()).isEqualTo(route);
+            assertThat(match.get().pathParams())
+                    .containsEntry("orderId", "ord-123")
+                    .containsEntry("itemId", "item-456");
+        }
+
+        @Test
+        @DisplayName("exact match takes precedence over parameterized route")
+        void exactMatchPrecedence() {
+            ApiSurfaceRoute parameterized = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/api/v1/users/{id}")
+                    .actionName("User#get")
+                    .handler(ex -> ex.respond(HttpStatus.OK))
+                    .build();
+
+            ApiSurfaceRoute exact = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/api/v1/users/me")
+                    .actionName("User#me")
+                    .handler(ex -> ex.respond(HttpStatus.OK))
+                    .build();
+
+            registry.registerRoute(parameterized);
+            registry.registerRoute(exact);
+
+            Optional<RouteMatch> match = registry.matchRoute(HttpMethod.GET, "/api/v1/users/me");
+            assertThat(match).isPresent();
+            assertThat(match.get().route()).isEqualTo(exact);
+            assertThat(match.get().pathParams()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("unregisters an existing route")
+        void unregistersRoute() {
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/api/v1/ping")
+                    .actionName("Ping#ping")
+                    .handler(ex -> ex.respond(HttpStatus.OK))
+                    .build();
+
+            registry.registerRoute(route);
+            assertThat(registry.routeCount()).isEqualTo(1);
+
+            boolean removed = registry.unregisterRoute(route);
+            assertThat(removed).isTrue();
+            assertThat(registry.routeCount()).isZero();
+            assertThat(registry.matchRoute(HttpMethod.GET, "/api/v1/ping")).isEmpty();
+        }
+
+        @Test
+        @DisplayName("clears all routes")
+        void clearsAllRoutes() {
+            registry.registerRoute(ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/r1")
+                    .actionName("A#1")
+                    .handler(ex -> ex.respond(HttpStatus.OK))
+                    .build());
+            registry.registerRoute(ApiSurfaceRoute.builder()
+                    .method(HttpMethod.POST)
+                    .pathPattern("/r2")
+                    .actionName("A#2")
+                    .handler(ex -> ex.respond(HttpStatus.CREATED))
+                    .build());
+
+            assertThat(registry.routeCount()).isEqualTo(2);
+            registry.clear();
+            assertThat(registry.routeCount()).isZero();
+            assertThat(registry.routes()).isEmpty();
+        }
+    }
+
+    @Nested
+    @DisplayName("HTTP exchange dispatching")
+    class HttpDispatch {
+
+        @Test
+        @DisplayName("dispatches to matched route and injects path parameters into exchange")
+        void dispatchesToMatchedRoute() {
+            AtomicReference<Map<String, String>> receivedParams = new AtomicReference<>();
+            AtomicBoolean handlerInvoked = new AtomicBoolean();
+
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/customers/{cid}/invoices/{invId}")
+                    .actionName("Invoice#get")
+                    .handler(ex -> {
+                        handlerInvoked.set(true);
+                        receivedParams.set(ex.pathParams());
+                        ex.respond(HttpStatus.OK);
+                    })
+                    .build();
+
+            registry.registerRoute(route);
+
+            RecordingHttpExchange exchange = new RecordingHttpExchange(
+                    HttpRequest.noBody(HttpMethod.GET, "/customers/CUST-1/invoices/INV-99", HttpVersion.HTTP_1_1, List.of())
+            );
+
+            registry.handle(exchange);
+
+            assertThat(handlerInvoked).isTrue();
+            assertThat(receivedParams.get())
+                    .containsEntry("cid", "CUST-1")
+                    .containsEntry("invId", "INV-99");
+            assertThat(exchange.status).isEqualTo(HttpStatus.OK);
+        }
+
+        @Test
+        @DisplayName("returns 404 NOT_FOUND when no route matches path")
+        void returnsNotFoundForUnmappedPath() {
+            RecordingHttpExchange exchange = new RecordingHttpExchange(
+                    HttpRequest.noBody(HttpMethod.GET, "/nonexistent/path", HttpVersion.HTTP_1_1, List.of())
+            );
+
+            registry.handle(exchange);
+
+            assertThat(exchange.status).isEqualTo(HttpStatus.NOT_FOUND);
+        }
+
+        @Test
+        @DisplayName("returns 405 METHOD_NOT_ALLOWED when path matches under another method")
+        void returnsMethodNotAllowed() {
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.POST)
+                    .pathPattern("/api/v1/orders")
+                    .actionName("Order#create")
+                    .handler(ex -> ex.respond(HttpStatus.CREATED))
+                    .build();
+
+            registry.registerRoute(route);
+
+            RecordingHttpExchange exchange = new RecordingHttpExchange(
+                    HttpRequest.noBody(HttpMethod.GET, "/api/v1/orders", HttpVersion.HTTP_1_1, List.of())
+            );
+
+            registry.handle(exchange);
+
+            assertThat(exchange.status).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+            assertThat(exchange.response).isNotNull();
+            assertThat(exchange.response.headers())
+                    .anyMatch(h -> h.name().equalsIgnoreCase("Allow") && h.value().contains("POST"));
+        }
+
+        @Test
+        @DisplayName("returns 500 INTERNAL_SERVER_ERROR when handler throws uncaught exception")
+        void returnsInternalServerErrorOnException() {
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/faulty")
+                    .actionName("Faulty#run")
+                    .handler(ex -> {
+                        throw new RuntimeException("Simulated boundary fault");
+                    })
+                    .build();
+
+            registry.registerRoute(route);
+
+            RecordingHttpExchange exchange = new RecordingHttpExchange(
+                    HttpRequest.noBody(HttpMethod.GET, "/faulty", HttpVersion.HTTP_1_1, List.of())
+            );
+
+            registry.handle(exchange);
+
+            assertThat(exchange.status).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+
+        @Test
+        @DisplayName("strips query string before matching route")
+        void stripsQueryString() {
+            AtomicBoolean invoked = new AtomicBoolean();
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/api/v1/search")
+                    .actionName("Search#query")
+                    .handler(ex -> {
+                        invoked.set(true);
+                        ex.respond(HttpStatus.OK);
+                    })
+                    .build();
+
+            registry.registerRoute(route);
+
+            RecordingHttpExchange exchange = new RecordingHttpExchange(
+                    HttpRequest.noBody(HttpMethod.GET, "/api/v1/search?q=test&limit=10", HttpVersion.HTTP_1_1, List.of())
+            );
+
+            registry.handle(exchange);
+
+            assertThat(invoked).isTrue();
+            assertThat(exchange.status).isEqualTo(HttpStatus.OK);
+        }
+    }
+
+    private static class RecordingHttpExchange implements HttpExchange {
+        private final HttpRequest request;
+        private HttpResponse response;
+        private HttpStatus status;
+        private Object body;
+        private Map<String, String> pathParams = Map.of();
+
+        RecordingHttpExchange(HttpRequest request) {
+            this.request = request;
+        }
+
+        @Override
+        public HttpRequest request() {
+            return request;
+        }
+
+        @Override
+        public Map<String, String> pathParams() {
+            return pathParams;
+        }
+
+        @Override
+        public void respond(HttpResponse response) {
+            this.response = response;
+            this.status = response.status();
+        }
+
+        @Override
+        public void respond(HttpTypedResponse typedResponse) {
+            this.status = typedResponse.status();
+        }
+
+        @Override
+        public void respond(HttpStatus status, Object body) {
+            this.status = status;
+            this.body = body;
+        }
+
+        @Override
+        public void respond(HttpStatus status) {
+            this.status = status;
+        }
+    }
+}
