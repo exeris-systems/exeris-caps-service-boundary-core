@@ -43,9 +43,9 @@
              preview-clean baseline exists to avoid. -->
         <maven.compiler.release>25</maven.compiler.release>
 
-        <exeris.sdk.version>0.11.0</exeris.sdk.version>
-        <exeris.kernel.version>0.11.0</exeris.kernel.version>
-        <exeris.tooling.version>0.8.0</exeris.tooling.version>
+        <exeris.sdk.version>0.12.0</exeris.sdk.version>
+        <exeris.kernel.version>0.12.0</exeris.kernel.version>
+        <exeris.tooling.version>0.9.0-SNAPSHOT</exeris.tooling.version>
 
         <junit.version>5.11.4</junit.version>
         <assertj.version>3.27.7</assertj.version>
