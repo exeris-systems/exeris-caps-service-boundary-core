@@ -10,8 +10,18 @@ import eu.exeris.kernel.spi.http.HttpResponse;
 import eu.exeris.kernel.spi.http.HttpStatus;
 import eu.exeris.kernel.spi.http.HttpVersion;
 
+import eu.exeris.caps.serviceboundarycore.api.AdmissionFilter;
+import eu.exeris.caps.serviceboundarycore.api.RequestFilterChain;
+import eu.exeris.kernel.spi.http.HttpExchange;
+import eu.exeris.kernel.spi.http.HttpHeader;
+import eu.exeris.kernel.spi.http.HttpMethod;
+import eu.exeris.kernel.spi.http.HttpResponse;
+import eu.exeris.kernel.spi.http.HttpStatus;
+import eu.exeris.kernel.spi.http.HttpVersion;
+
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -21,17 +31,22 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * Default implementation of {@link ApiSurfaceRegistry}.
+ * Default implementation of {@link ApiSurfaceRegistry} and {@link RequestFilterChain}.
  *
- * <p>Thread-safe route registry and dispatcher for Service Boundary SKUs.
+ * <p>Thread-safe route registry, filter chain, and dispatcher for Service Boundary SKUs.
  *
  * @since 0.1.0
  */
-public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry {
+public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, RequestFilterChain {
 
     private static final System.Logger LOG = System.getLogger(DefaultApiSurfaceRegistry.class.getName());
 
+    private static final Comparator<AdmissionFilter> FILTER_COMPARATOR = Comparator
+            .comparing(AdmissionFilter::phase)
+            .thenComparing(AdmissionFilter::name);
+
     private final List<ApiSurfaceRoute> routeList = new CopyOnWriteArrayList<>();
+    private final List<AdmissionFilter> filterList = new CopyOnWriteArrayList<>();
 
     public DefaultApiSurfaceRegistry() {
     }
@@ -47,6 +62,50 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry {
     public boolean unregisterRoute(ApiSurfaceRoute route) {
         Objects.requireNonNull(route, "route");
         return routeList.remove(route);
+    }
+
+    @Override
+    public void registerFilter(AdmissionFilter filter) {
+        Objects.requireNonNull(filter, "filter");
+        filterList.add(filter);
+        LOG.log(System.Logger.Level.DEBUG, "Registered admission filter: {0} ({1})", filter.name(), filter.phase());
+    }
+
+    @Override
+    public boolean unregisterFilter(AdmissionFilter filter) {
+        Objects.requireNonNull(filter, "filter");
+        return filterList.remove(filter);
+    }
+
+    @Override
+    public List<AdmissionFilter> filters() {
+        List<AdmissionFilter> copy = new ArrayList<>(filterList);
+        copy.sort(FILTER_COMPARATOR);
+        return Collections.unmodifiableList(copy);
+    }
+
+    @Override
+    public RequestFilterChain filterChain() {
+        return this;
+    }
+
+    @Override
+    public boolean execute(HttpExchange exchange, RouteMatch routeMatch) {
+        List<AdmissionFilter> orderedFilters = filters();
+        for (AdmissionFilter filter : orderedFilters) {
+            try {
+                boolean proceed = filter.filter(exchange, routeMatch);
+                if (!proceed) {
+                    LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.name());
+                    return false;
+                }
+            } catch (Exception ex) {
+                LOG.log(System.Logger.Level.ERROR, "Unhandled exception in admission filter " + filter.name(), ex);
+                exchange.respond(HttpStatus.INTERNAL_SERVER_ERROR);
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
@@ -96,6 +155,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry {
     @Override
     public void clear() {
         routeList.clear();
+        filterList.clear();
     }
 
     @Override
@@ -112,6 +172,9 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry {
                     ? exchange
                     : new MatchedHttpExchange(exchange, match.pathParams());
             try {
+                if (!execute(effectiveExchange, match)) {
+                    return;
+                }
                 match.route().handler().handle(effectiveExchange);
             } catch (Exception ex) {
                 LOG.log(System.Logger.Level.ERROR, "Unhandled exception in route handler for " + match.route(), ex);

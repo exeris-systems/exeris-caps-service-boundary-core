@@ -3,7 +3,7 @@
   "stamp" : {
     "validated" : true,
     "compositionVersion" : "0.0.0",
-    "contentBinding" : "sha256:40f9fe8a23a71ab12ecfd029aa30cc75204edd1ffe147fa80ac795d66ab414ba"
+    "contentBinding" : "sha256:77480dfbad5cf34059c9b2b034f347ec2f7a3a8ecc645944ae5fd8f3dba2bc4d"
   },
   "modules" : [
     {
@@ -22,6 +22,10 @@
           },
           {
             "service" : "eu.exeris.caps.serviceboundarycore.api.RequestContext",
+            "version" : "1.0.0"
+          },
+          {
+            "service" : "eu.exeris.caps.serviceboundarycore.api.RequestFilterChain",
             "version" : "1.0.0"
           }
         ],

@@ -1,6 +1,7 @@
 package eu.exeris.caps.serviceboundarycore;
 
 import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRegistry;
+import eu.exeris.caps.serviceboundarycore.api.RequestFilterChain;
 import eu.exeris.caps.serviceboundarycore.api.RequestContext;
 import eu.exeris.caps.serviceboundarycore.api.ServiceLifecycleHooks;
 import eu.exeris.caps.serviceboundarycore.internal.CompositeServiceLifecycleHooks;
@@ -20,7 +21,8 @@ import java.util.Objects;
  * <ul>
  *   <li>{@link ApiSurfaceRegistry} for build-time emitted route and action dispatch;</li>
  *   <li>{@link ServiceLifecycleHooks} for lifecycle interceptors and hooks;</li>
- *   <li>{@link RequestContext} for virtual-thread context and physical tenant isolation (ADR-012).</li>
+ *   <li>{@link RequestContext} for virtual-thread context and physical tenant isolation (ADR-012);</li>
+ *   <li>{@link RequestFilterChain} for ordered request admission filtering (ADR-099).</li>
  * </ul>
  *
  * <p>Annotated with {@code @CapabilityLifecycle} and implements {@link CapabilityLifecycleHooks}
@@ -33,6 +35,7 @@ import java.util.Objects;
 @Provides(service = ApiSurfaceRegistry.class, version = "1.0.0")
 @Provides(service = ServiceLifecycleHooks.class, version = "1.0.0")
 @Provides(service = RequestContext.class, version = "1.0.0")
+@Provides(service = RequestFilterChain.class, version = "1.0.0")
 public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks {
 
     private final ApiSurfaceRegistry registry;
@@ -52,6 +55,10 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
 
     public ApiSurfaceRegistry apiSurfaceRegistry() {
         return registry;
+    }
+
+    public RequestFilterChain requestFilterChain() {
+        return registry.filterChain();
     }
 
     public ServiceLifecycleHooks serviceLifecycleHooks() {

@@ -14,6 +14,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -265,6 +266,161 @@ class DefaultApiSurfaceRegistryTest {
 
             assertThat(invoked).isTrue();
             assertThat(exchange.status).isEqualTo(HttpStatus.OK);
+        }
+    }
+
+    @Nested
+    @DisplayName("admission filter chain ordering and execution (ADR-024, ADR-099)")
+    class FilterChainExecution {
+
+        @Test
+        @DisplayName("executes filters strictly by phase then lexicographically by name")
+        void executesFiltersByPhaseAndName() {
+            List<String> executionOrder = new ArrayList<>();
+
+            eu.exeris.caps.serviceboundarycore.api.AdmissionFilter authFilter = new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
+                @Override public String name() { return "jwt-auth"; }
+                @Override public eu.exeris.caps.serviceboundarycore.api.AdmissionPhase phase() { return eu.exeris.caps.serviceboundarycore.api.AdmissionPhase.AUTHENTICATION; }
+                @Override public boolean filter(HttpExchange ex, RouteMatch rm) {
+                    executionOrder.add("AUTHENTICATION:jwt-auth");
+                    return true;
+                }
+            };
+
+            eu.exeris.caps.serviceboundarycore.api.AdmissionFilter rateLimitFilter = new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
+                @Override public String name() { return "ip-rate-limit"; }
+                @Override public eu.exeris.caps.serviceboundarycore.api.AdmissionPhase phase() { return eu.exeris.caps.serviceboundarycore.api.AdmissionPhase.RATE_LIMITING; }
+                @Override public boolean filter(HttpExchange ex, RouteMatch rm) {
+                    executionOrder.add("RATE_LIMITING:ip-rate-limit");
+                    return true;
+                }
+            };
+
+            eu.exeris.caps.serviceboundarycore.api.AdmissionFilter preFilterB = new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
+                @Override public String name() { return "b-envelope"; }
+                @Override public eu.exeris.caps.serviceboundarycore.api.AdmissionPhase phase() { return eu.exeris.caps.serviceboundarycore.api.AdmissionPhase.PRE_ADMISSION; }
+                @Override public boolean filter(HttpExchange ex, RouteMatch rm) {
+                    executionOrder.add("PRE_ADMISSION:b-envelope");
+                    return true;
+                }
+            };
+
+            eu.exeris.caps.serviceboundarycore.api.AdmissionFilter preFilterA = new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
+                @Override public String name() { return "a-headers"; }
+                @Override public eu.exeris.caps.serviceboundarycore.api.AdmissionPhase phase() { return eu.exeris.caps.serviceboundarycore.api.AdmissionPhase.PRE_ADMISSION; }
+                @Override public boolean filter(HttpExchange ex, RouteMatch rm) {
+                    executionOrder.add("PRE_ADMISSION:a-headers");
+                    return true;
+                }
+            };
+
+            eu.exeris.caps.serviceboundarycore.api.AdmissionFilter rbacFilter = new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
+                @Override public String name() { return "rbac-policy"; }
+                @Override public eu.exeris.caps.serviceboundarycore.api.AdmissionPhase phase() { return eu.exeris.caps.serviceboundarycore.api.AdmissionPhase.AUTHORIZATION; }
+                @Override public boolean filter(HttpExchange ex, RouteMatch rm) {
+                    executionOrder.add("AUTHORIZATION:rbac-policy");
+                    return true;
+                }
+            };
+
+            // Register in arbitrary out-of-order sequence
+            registry.registerFilter(rbacFilter);
+            registry.registerFilter(authFilter);
+            registry.registerFilter(preFilterB);
+            registry.registerFilter(rateLimitFilter);
+            registry.registerFilter(preFilterA);
+
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/api/test")
+                    .actionName("Test#action")
+                    .handler(ex -> {
+                        executionOrder.add("HANDLER");
+                        ex.respond(HttpStatus.OK);
+                    })
+                    .build();
+            registry.registerRoute(route);
+
+            RecordingHttpExchange exchange = new RecordingHttpExchange(
+                    HttpRequest.noBody(HttpMethod.GET, "/api/test", HttpVersion.HTTP_1_1, List.of())
+            );
+
+            registry.handle(exchange);
+
+            assertThat(executionOrder).containsExactly(
+                    "PRE_ADMISSION:a-headers",
+                    "PRE_ADMISSION:b-envelope",
+                    "RATE_LIMITING:ip-rate-limit",
+                    "AUTHENTICATION:jwt-auth",
+                    "AUTHORIZATION:rbac-policy",
+                    "HANDLER"
+            );
+            assertThat(exchange.status).isEqualTo(HttpStatus.OK);
+        }
+
+        @Test
+        @DisplayName("filter returning false halts chain and handler execution")
+        void filterShortCircuits() {
+            List<String> executionOrder = new ArrayList<>();
+
+            eu.exeris.caps.serviceboundarycore.api.AdmissionFilter rateLimiter = new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
+                @Override public String name() { return "rate-limit"; }
+                @Override public eu.exeris.caps.serviceboundarycore.api.AdmissionPhase phase() { return eu.exeris.caps.serviceboundarycore.api.AdmissionPhase.RATE_LIMITING; }
+                @Override public boolean filter(HttpExchange ex, RouteMatch rm) {
+                    executionOrder.add("RATE_LIMITING:blocked");
+                    ex.respond(HttpStatus.TOO_MANY_REQUESTS);
+                    return false;
+                }
+            };
+
+            eu.exeris.caps.serviceboundarycore.api.AdmissionFilter authFilter = new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
+                @Override public String name() { return "jwt-auth"; }
+                @Override public eu.exeris.caps.serviceboundarycore.api.AdmissionPhase phase() { return eu.exeris.caps.serviceboundarycore.api.AdmissionPhase.AUTHENTICATION; }
+                @Override public boolean filter(HttpExchange ex, RouteMatch rm) {
+                    executionOrder.add("AUTHENTICATION:should_not_run");
+                    return true;
+                }
+            };
+
+            registry.registerFilter(rateLimiter);
+            registry.registerFilter(authFilter);
+
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/api/test")
+                    .actionName("Test#action")
+                    .handler(ex -> {
+                        executionOrder.add("HANDLER:should_not_run");
+                        ex.respond(HttpStatus.OK);
+                    })
+                    .build();
+            registry.registerRoute(route);
+
+            RecordingHttpExchange exchange = new RecordingHttpExchange(
+                    HttpRequest.noBody(HttpMethod.GET, "/api/test", HttpVersion.HTTP_1_1, List.of())
+            );
+
+            registry.handle(exchange);
+
+            assertThat(executionOrder).containsExactly("RATE_LIMITING:blocked");
+            assertThat(exchange.status).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        }
+
+        @Test
+        @DisplayName("unregisters filter cleanly")
+        void unregistersFilter() {
+            eu.exeris.caps.serviceboundarycore.api.AdmissionFilter filter = new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
+                @Override public String name() { return "temp-filter"; }
+                @Override public eu.exeris.caps.serviceboundarycore.api.AdmissionPhase phase() { return eu.exeris.caps.serviceboundarycore.api.AdmissionPhase.PRE_ADMISSION; }
+                @Override public boolean filter(HttpExchange ex, RouteMatch rm) { return true; }
+            };
+
+            registry.registerFilter(filter);
+            assertThat(registry.filters()).contains(filter);
+
+            boolean removed = registry.unregisterFilter(filter);
+            assertThat(removed).isTrue();
+            assertThat(registry.filters()).doesNotContain(filter);
         }
     }
 

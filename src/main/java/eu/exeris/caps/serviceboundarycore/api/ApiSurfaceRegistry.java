@@ -64,6 +64,25 @@ public interface ApiSurfaceRegistry extends HttpHandler {
     void clear();
 
     /**
+     * Registers an admission filter into the request pipeline.
+     *
+     * @param filter admission filter to register; never {@code null}
+     */
+    default void registerFilter(AdmissionFilter filter) {}
+
+    default boolean unregisterFilter(AdmissionFilter filter) {
+        return false;
+    }
+
+    default List<AdmissionFilter> filters() {
+        return List.of();
+    }
+
+    default RequestFilterChain filterChain() {
+        return RequestFilterChain.empty();
+    }
+
+    /**
      * Dispatches an incoming HTTP exchange to the matched route handler, or responds
      * with 404 (Not Found) or 405 (Method Not Allowed) if no route matches.
      *
@@ -72,3 +91,4 @@ public interface ApiSurfaceRegistry extends HttpHandler {
     @Override
     void handle(HttpExchange exchange);
 }
+

@@ -20,6 +20,7 @@ class ServiceBoundaryCoreModuleTest {
         ServiceBoundaryCoreModule module = new ServiceBoundaryCoreModule();
         assertThat(module.apiSurfaceRegistry()).isNotNull();
         assertThat(module.serviceLifecycleHooks()).isNotNull();
+        assertThat(module.requestFilterChain()).isNotNull();
     }
 
     @Test
