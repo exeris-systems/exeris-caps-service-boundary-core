@@ -67,20 +67,32 @@ public interface ApiSurfaceRegistry extends HttpHandler {
      * Registers an admission filter into the request pipeline.
      *
      * @param filter admission filter to register; never {@code null}
+     * @throws IllegalArgumentException if the filter name is null or blank, or its phase is null
+     * @throws IllegalStateException    if a filter with the same name is already registered
      */
-    default void registerFilter(AdmissionFilter filter) {}
+    void registerFilter(AdmissionFilter filter);
 
-    default boolean unregisterFilter(AdmissionFilter filter) {
-        return false;
-    }
+    /**
+     * Removes a previously registered admission filter.
+     *
+     * @param filter the filter to remove; never {@code null}
+     * @return {@code true} if the filter was removed, {@code false} otherwise
+     */
+    boolean unregisterFilter(AdmissionFilter filter);
 
-    default List<AdmissionFilter> filters() {
-        return List.of();
-    }
+    /**
+     * Returns the registered admission filters in execution order.
+     *
+     * @return unmodifiable snapshot ordered by phase, then by name
+     */
+    List<AdmissionFilter> filters();
 
-    default RequestFilterChain filterChain() {
-        return RequestFilterChain.empty();
-    }
+    /**
+     * Returns the request filter chain that runs this registry's admission filters.
+     *
+     * @return the filter chain; never {@code null}
+     */
+    RequestFilterChain filterChain();
 
     /**
      * Dispatches an incoming HTTP exchange to the matched route handler, or responds
@@ -89,7 +101,11 @@ public interface ApiSurfaceRegistry extends HttpHandler {
      * <p>Between route match and handler the registered {@link AdmissionFilter}s run in order, each
      * with an {@link AdmissionContext} bound. The handler runs only when every filter passed, and it
      * runs inside the {@link RequestContext} the filters established: its principal is the one an
-     * admission filter verified, never one taken from the request itself.
+     * admission filter verified, never one taken from the request itself. Before the handler runs, every
+     * {@link ApiSurfaceRoute#requirements() route requirement} is enforced against that principal: an
+     * unauthenticated request is answered 401 and an authenticated one lacking a required scope 403.
+     *
+     * <p>Requests that match no route are answered 404 or 405 without running any filter.
      *
      * @param exchange the incoming HTTP exchange
      */

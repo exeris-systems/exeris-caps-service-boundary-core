@@ -27,7 +27,8 @@ class RequestContextTest {
         void buildsWithDefaults() {
             RequestContext ctx = RequestContext.builder().build();
 
-            assertThat(ctx.tenantId()).isEqualTo("default");
+            assertThat(ctx.tenantId()).isEmpty();
+            assertThat(ctx.sessionId()).isEmpty();
             assertThat(ctx.correlationId()).isNotBlank();
             assertThat(ctx.principal()).isEmpty();
             assertThat(ctx.attributes()).isEmpty();
@@ -36,20 +37,16 @@ class RequestContextTest {
         @Test
         @DisplayName("builds with custom tenant and attributes")
         void buildsWithCustomValues() {
-            UUID principalId = UUID.randomUUID();
-            PrincipalContext principal = new TestPrincipalContext(principalId, Optional.of(UUID.randomUUID()));
-
             RequestContext ctx = RequestContext.builder()
                     .tenantId("tenant-acme")
                     .correlationId("corr-12345")
-                    .principal(principal)
                     .attribute("client-ip", "192.168.1.1")
                     .attribute("trace-sampled", true)
                     .build();
 
-            assertThat(ctx.tenantId()).isEqualTo("tenant-acme");
+            assertThat(ctx.tenantId()).contains("tenant-acme");
             assertThat(ctx.correlationId()).isEqualTo("corr-12345");
-            assertThat(ctx.principal()).contains(principal);
+            assertThat(ctx.principal()).isEmpty();
             assertThat(ctx.attribute("client-ip")).contains("192.168.1.1");
             assertThat(ctx.attribute("trace-sampled")).contains(true);
             assertThat(ctx.attribute("non-existent")).isEmpty();
@@ -93,7 +90,7 @@ class RequestContextTest {
             RequestContext.runWith(ctx, () -> {
                 assertThat(RequestContext.isBound()).isTrue();
                 assertThat(RequestContext.current()).isSameAs(ctx);
-                assertThat(RequestContext.current().tenantId()).isEqualTo("tenant-omega");
+                assertThat(RequestContext.current().tenantId()).contains("tenant-omega");
                 verified.set(true);
             });
 
@@ -110,7 +107,7 @@ class RequestContextTest {
 
             String result = RequestContext.callWith(ctx, () -> {
                 assertThat(RequestContext.isBound()).isTrue();
-                return "result-for-" + RequestContext.current().tenantId();
+                return "result-for-" + RequestContext.current().tenantId().orElseThrow();
             });
 
             assertThat(result).isEqualTo("result-for-tenant-alpha");
@@ -122,21 +119,49 @@ class RequestContextTest {
         }
 
         @Test
-        @DisplayName("supports nested context binding with restored outer context")
+        @DisplayName("supports nested binding of an equivalent context with restored outer context")
         void nestedContexts() {
-            RequestContext outer = RequestContext.builder().tenantId("outer-tenant").build();
-            RequestContext inner = RequestContext.builder().tenantId("inner-tenant").build();
+            RequestContext outer = RequestContext.builder().tenantId("outer-tenant").correlationId("outer").build();
+            RequestContext sameTenant = RequestContext.builder().tenantId("outer-tenant").correlationId("inner").build();
 
             RequestContext.runWith(outer, () -> {
-                assertThat(RequestContext.current().tenantId()).isEqualTo("outer-tenant");
-
-                RequestContext.runWith(inner, () -> {
-                    assertThat(RequestContext.current().tenantId()).isEqualTo("inner-tenant");
+                RequestContext.runWith(sameTenant, () -> {
+                    assertThat(RequestContext.current().correlationId()).isEqualTo("inner");
                 });
 
-                assertThat(RequestContext.current().tenantId()).isEqualTo("outer-tenant");
+                assertThat(RequestContext.current().correlationId()).isEqualTo("outer");
             });
 
+            assertThat(RequestContext.isBound()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a bound context cannot be replaced by one with another tenant")
+        void nestedContextCannotChangeTenant() {
+            RequestContext outer = RequestContext.builder().tenantId("outer-tenant").build();
+            RequestContext other = RequestContext.builder().tenantId("inner-tenant").build();
+
+            RequestContext.runWith(outer, () ->
+                    assertThatThrownBy(() -> RequestContext.runWith(other, () -> { }))
+                            .isInstanceOf(IllegalStateException.class));
+        }
+
+        @Test
+        @DisplayName("a context implemented outside this capability cannot be bound")
+        void foreignImplementationRefused() {
+            RequestContext foreign = new RequestContext() {
+                @Override public Optional<String> tenantId() { return Optional.empty(); }
+                @Override public String correlationId() { return "x"; }
+                @Override public Optional<PrincipalContext> principal() {
+                    return Optional.of(new TestPrincipalContext(UUID.randomUUID(), Optional.empty()));
+                }
+                @Override public Optional<UUID> sessionId() { return Optional.empty(); }
+                @Override public Map<String, Object> attributes() { return Map.of(); }
+                @Override public Optional<Object> attribute(String key) { return Optional.empty(); }
+            };
+
+            assertThatThrownBy(() -> RequestContext.runWith(foreign, () -> { }))
+                    .isInstanceOf(IllegalArgumentException.class);
             assertThat(RequestContext.isBound()).isFalse();
         }
     }

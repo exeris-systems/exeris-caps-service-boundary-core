@@ -15,10 +15,24 @@ Status: proof of concept, built against `exeris-kernel` 0.13.0-SNAPSHOT. The API
 
 `ApiSurfaceRegistry` runs the registered `AdmissionFilter`s between route match and handler, ordered by
 `AdmissionPhase` (pre-admission, rate limiting, authentication, authorisation, post-admission) and then by
-name (ADR-099). Each filter either passes the request on or answers it. A filter that verifies the caller
-records the principal through `AdmissionContext.current().authenticate(...)`, once per request. The handler
-runs inside the resulting `RequestContext`, so `RequestContext.current().principal()` is the identity a
-filter verified and the only one a route uses; the handler has no `AdmissionContext` and cannot change it.
+name (ADR-099). Filter names are unique and non-blank; registering a duplicate is refused. Each filter
+either passes the request on or answers it. A filter that verifies the caller records the principal
+through `AdmissionContext.current().authenticate(...)`, once per request, and the session it authenticated
+with through `authenticate(principal, sessionId)`. The handler runs inside the resulting `RequestContext`,
+so `RequestContext.current().principal()` is the identity a filter verified and the only one a route uses;
+the handler has no `AdmissionContext` and cannot change it.
+
+- **Principal, tenant and session are admission-only.** `RequestContext.builder()` builds contexts without a
+  principal or a session id, and `runWith`/`callWith` refuse to replace the principal, tenant or session id
+  of a context that is already bound. `RequestContext.sessionId()` is the one place a session-bound
+  capability reads the caller's session from.
+- **No implicit tenant.** `RequestContext.tenantId()` is empty until the host binds a tenant or an
+  authenticated principal carries one.
+- **Route requirements are enforced.** After the filters, the registry answers 401 when a route requires an
+  authenticated principal and none was recorded, and 403 when the principal lacks a required scope. A route
+  with no requirement, or `RouteRequirement.permitAll()`, is served anonymously.
+- **Unmatched requests skip admission.** A path or method that matches no route is answered 404 or 405
+  before any filter runs, so rate limiting does not see them.
 
 ## Build & test
 

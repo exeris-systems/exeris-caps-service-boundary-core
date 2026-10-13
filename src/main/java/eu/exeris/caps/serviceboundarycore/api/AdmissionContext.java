@@ -3,6 +3,8 @@ package eu.exeris.caps.serviceboundarycore.api;
 import eu.exeris.caps.serviceboundarycore.internal.DefaultAdmissionContext;
 import eu.exeris.kernel.spi.security.PrincipalContext;
 
+import java.util.UUID;
+
 /**
  * The per-request state an {@link AdmissionFilter} contributes to the {@link RequestContext} the route
  * handler runs in (ADR-099).
@@ -15,7 +17,8 @@ import eu.exeris.kernel.spi.security.PrincipalContext;
  * handler's side can replace it.
  *
  * @apiNote An admission context is confined to the thread that runs the request's filters. It is
- *     bound for the duration of that run only; it must not be stored or handed to another thread.
+ *     bound for the duration of that run only; it must not be stored or handed to another thread, and
+ *     every call from another thread is refused with {@link IllegalStateException}.
  * @since 0.1.0
  */
 public interface AdmissionContext {
@@ -28,15 +31,30 @@ public interface AdmissionContext {
      *
      * @param principal verified principal; non-null
      * @throws IllegalStateException if a principal is already established or the context is sealed
+     * @throws IllegalStateException if called from a thread other than the one running the request's filters
      */
     void authenticate(PrincipalContext principal);
+
+    /**
+     * Records the authenticated principal of this request together with the session it authenticated with.
+     *
+     * <p>The session id becomes {@link RequestContext#sessionId()} for later filters and the handler. It
+     * is the only way a session id enters a request context. The same once-per-request rule as
+     * {@link #authenticate(PrincipalContext)} applies to the principal and the session id together.
+     *
+     * @param principal verified principal; non-null
+     * @param sessionId identifier of the session the principal authenticated with; non-null
+     * @throws IllegalStateException if a principal is already established or the context is sealed
+     * @throws IllegalStateException if called from a thread other than the one running the request's filters
+     */
+    void authenticate(PrincipalContext principal, UUID sessionId);
 
     /**
      * Adds a request-scoped attribute that the handler reads through {@link RequestContext#attribute(String)}.
      *
      * @param key attribute name; non-null
      * @param value attribute value; {@code null} removes the attribute
-     * @throws IllegalStateException if the context is sealed
+     * @throws IllegalStateException if the context is sealed or called from another thread
      */
     void attribute(String key, Object value);
 

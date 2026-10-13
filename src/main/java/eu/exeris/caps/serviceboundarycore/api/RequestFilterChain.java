@@ -43,13 +43,15 @@ public interface RequestFilterChain {
     boolean execute(HttpExchange exchange, RouteMatch routeMatch);
 
     /**
-     * Returns a no-op empty filter chain.
+     * Returns an empty filter chain that admits every request and accepts no filters.
      *
-     * @return empty filter chain
+     * @return empty filter chain whose {@code registerFilter} throws {@link UnsupportedOperationException}
      */
     static RequestFilterChain empty() {
         return new RequestFilterChain() {
-            @Override public void registerFilter(AdmissionFilter filter) {}
+            @Override public void registerFilter(AdmissionFilter filter) {
+                throw new UnsupportedOperationException("The empty filter chain accepts no filters");
+            }
             @Override public boolean unregisterFilter(AdmissionFilter filter) { return false; }
             @Override public List<AdmissionFilter> filters() { return List.of(); }
             @Override public boolean execute(HttpExchange exchange, RouteMatch routeMatch) { return true; }

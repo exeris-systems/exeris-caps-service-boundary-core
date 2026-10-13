@@ -3,6 +3,7 @@ package eu.exeris.caps.serviceboundarycore.internal;
 import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRoute;
 import eu.exeris.caps.serviceboundarycore.api.RouteMatch;
 import eu.exeris.kernel.spi.http.HttpExchange;
+import eu.exeris.kernel.spi.http.HttpHandler;
 import eu.exeris.kernel.spi.http.HttpMethod;
 import eu.exeris.kernel.spi.http.HttpRequest;
 import eu.exeris.kernel.spi.http.HttpResponse;
@@ -266,6 +267,54 @@ class DefaultApiSurfaceRegistryTest {
 
             assertThat(invoked).isTrue();
             assertThat(exchange.status).isEqualTo(HttpStatus.OK);
+        }
+    }
+
+    @Nested
+    @DisplayName("registration guards")
+    class RegistrationGuards {
+
+        private ApiSurfaceRoute route(String action, HttpHandler handler) {
+            return ApiSurfaceRoute.builder().method(HttpMethod.GET).pathPattern("/dup")
+                    .actionName(action).handler(handler).build();
+        }
+
+        private eu.exeris.caps.serviceboundarycore.api.AdmissionFilter named(String name) {
+            return new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
+                @Override public String name() { return name; }
+                @Override public eu.exeris.caps.serviceboundarycore.api.AdmissionPhase phase() { return eu.exeris.caps.serviceboundarycore.api.AdmissionPhase.PRE_ADMISSION; }
+                @Override public boolean filter(HttpExchange ex, RouteMatch rm) { return true; }
+            };
+        }
+
+        @Test
+        @DisplayName("a second route for the same method and pattern is refused")
+        void duplicateRouteRefused() {
+            registry.registerRoute(route("A#a", ex -> { }));
+
+            assertThatThrownBy(() -> registry.registerRoute(route("B#b", ex -> { })))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(registry.routeCount()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("unregistering an equal route with another handler removes nothing")
+        void unregisterNeedsSameHandler() {
+            registry.registerRoute(route("A#a", ex -> { }));
+
+            assertThat(registry.unregisterRoute(route("A#a", ex -> { }))).isFalse();
+            assertThat(registry.routeCount()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a filter with a null, blank or duplicate name is refused")
+        void filterNameGuards() {
+            registry.registerFilter(named("one"));
+
+            assertThatThrownBy(() -> registry.registerFilter(named(null))).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> registry.registerFilter(named(" "))).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> registry.registerFilter(named("one"))).isInstanceOf(IllegalStateException.class);
+            assertThat(registry.filters()).hasSize(1);
         }
     }
 

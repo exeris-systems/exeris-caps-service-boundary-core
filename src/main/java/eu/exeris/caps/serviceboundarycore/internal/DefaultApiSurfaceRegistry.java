@@ -10,6 +10,8 @@ import eu.exeris.kernel.spi.http.HttpExchange;
 import eu.exeris.kernel.spi.http.HttpHeader;
 import eu.exeris.kernel.spi.http.HttpMethod;
 import eu.exeris.kernel.spi.http.HttpResponse;
+import eu.exeris.kernel.spi.http.RouteRequirement;
+import eu.exeris.kernel.spi.security.PrincipalContext;
 import eu.exeris.kernel.spi.http.HttpStatus;
 import eu.exeris.kernel.spi.http.HttpVersion;
 
@@ -33,6 +35,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * {@link RequestContext} established so far bound; the handler runs only after every filter passed, inside
  * the sealed {@link RequestContext}, so the principal a handler reads is the one admission established.
  *
+ * <p>After the filters, the route's {@link RouteRequirement}s are enforced against the admitted principal
+ * before the handler runs; a request that does not satisfy them is answered 401 or 403.
+ *
  * @since 0.1.0
  */
 public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, RequestFilterChain {
@@ -52,20 +57,42 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     @Override
     public void registerRoute(ApiSurfaceRoute route) {
         Objects.requireNonNull(route, "route");
-        routeList.add(route);
+        synchronized (routeList) {
+            for (ApiSurfaceRoute existing : routeList) {
+                if (existing.method() == route.method() && existing.pathPattern().equals(route.pathPattern())) {
+                    throw new IllegalStateException("A route is already registered for " + route.method()
+                            + " " + route.pathPattern());
+                }
+            }
+            routeList.add(route);
+        }
         LOG.log(System.Logger.Level.DEBUG, "Registered boundary route: {0}", route);
     }
 
     @Override
     public boolean unregisterRoute(ApiSurfaceRoute route) {
         Objects.requireNonNull(route, "route");
-        return routeList.remove(route);
+        return routeList.removeIf(existing -> existing.equals(route) && existing.handler() == route.handler());
     }
 
     @Override
     public void registerFilter(AdmissionFilter filter) {
         Objects.requireNonNull(filter, "filter");
-        filterList.add(filter);
+        String name = filter.name();
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("An admission filter needs a non-blank name");
+        }
+        if (filter.phase() == null) {
+            throw new IllegalArgumentException("Admission filter " + name + " needs a phase");
+        }
+        synchronized (filterList) {
+            for (AdmissionFilter existing : filterList) {
+                if (name.equals(existing.name())) {
+                    throw new IllegalStateException("An admission filter named " + name + " is already registered");
+                }
+            }
+            filterList.add(filter);
+        }
         LOG.log(System.Logger.Level.DEBUG, "Registered admission filter: {0} ({1})", filter.name(), filter.phase());
     }
 
@@ -100,7 +127,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         for (AdmissionFilter filter : orderedFilters) {
             try {
                 boolean proceed = DefaultAdmissionContext.callWith(admission,
-                        () -> DefaultRequestContext.callWith(admission.requestContext(),
+                        () -> DefaultRequestContext.bind(admission.requestContext(),
                                 () -> filter.filter(exchange, routeMatch)));
                 if (!proceed) {
                     LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.name());
@@ -175,20 +202,28 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         Optional<RouteMatch> matchOpt = matchRoute(method, cleanPath);
         if (matchOpt.isPresent()) {
             RouteMatch match = matchOpt.get();
-            HttpExchange effectiveExchange = match.pathParams().isEmpty()
-                    ? exchange
-                    : new MatchedHttpExchange(exchange, match.pathParams());
+            MatchedHttpExchange effectiveExchange = new MatchedHttpExchange(exchange, match.pathParams());
             try {
                 DefaultAdmissionContext admission = DefaultAdmissionContext.open();
                 if (!admit(effectiveExchange, match, admission)) {
                     return;
                 }
                 admission.seal();
-                DefaultRequestContext.runWith(admission.requestContext(),
-                        () -> match.route().handler().handle(effectiveExchange));
+                RequestContext admitted = admission.requestContext();
+                HttpStatus denial = unmet(match.route(), admitted);
+                if (denial != null) {
+                    effectiveExchange.respond(denial);
+                    return;
+                }
+                DefaultRequestContext.bind(admitted, () -> {
+                    match.route().handler().handle(effectiveExchange);
+                    return null;
+                });
             } catch (Exception ex) {
                 LOG.log(System.Logger.Level.ERROR, "Unhandled exception in route handler for " + match.route(), ex);
-                exchange.respond(HttpStatus.INTERNAL_SERVER_ERROR);
+                if (!effectiveExchange.responded()) {
+                    exchange.respond(HttpStatus.INTERNAL_SERVER_ERROR);
+                }
             }
             return;
         }
@@ -209,6 +244,64 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         } else {
             exchange.respond(HttpStatus.NOT_FOUND);
         }
+    }
+
+    /**
+     * Evaluates the route's requirements against the admitted principal.
+     *
+     * @return the status that answers the request, or {@code null} when every requirement is met
+     */
+    private static HttpStatus unmet(ApiSurfaceRoute route, RequestContext admitted) {
+        PrincipalContext principal = admitted.principal().orElse(null);
+        for (RouteRequirement requirement : route.requirements()) {
+            switch (requirement.kind()) {
+                case PERMIT_ALL -> { }
+                case AUTHENTICATED -> {
+                    if (principal == null) {
+                        return HttpStatus.UNAUTHORIZED;
+                    }
+                }
+                case ANY_SCOPE -> {
+                    if (principal == null) {
+                        return HttpStatus.UNAUTHORIZED;
+                    }
+                    if (!holdsAnyScope(principal, requirement)) {
+                        return HttpStatus.FORBIDDEN;
+                    }
+                }
+                case ALL_SCOPES -> {
+                    if (principal == null) {
+                        return HttpStatus.UNAUTHORIZED;
+                    }
+                    if (!holdsAllScopes(principal, requirement)) {
+                        return HttpStatus.FORBIDDEN;
+                    }
+                }
+                // An abstention is refused at route construction; reaching it here is a defect, not a permission.
+                case ABSTAIN -> {
+                    return HttpStatus.INTERNAL_SERVER_ERROR;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean holdsAnyScope(PrincipalContext principal, RouteRequirement requirement) {
+        for (int i = 0; i < requirement.scopeCount(); i++) {
+            if (principal.hasScope(requirement.scopeAt(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean holdsAllScopes(PrincipalContext principal, RouteRequirement requirement) {
+        for (int i = 0; i < requirement.scopeCount(); i++) {
+            if (!principal.hasScope(requirement.scopeAt(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static String stripQueryString(String path) {
