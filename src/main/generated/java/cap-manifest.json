@@ -3,7 +3,7 @@
   "stamp" : {
     "validated" : true,
     "compositionVersion" : "0.0.0",
-    "contentBinding" : "sha256:77480dfbad5cf34059c9b2b034f347ec2f7a3a8ecc645944ae5fd8f3dba2bc4d"
+    "contentBinding" : "sha256:59a7b87d9555983000de0d1cf7e5bcef9de3f4ce30f70fd9e89be15bdfcde14b"
   },
   "modules" : [
     {
@@ -14,7 +14,7 @@
         "provides" : [
           {
             "service" : "eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRegistry",
-            "version" : "1.0.0"
+            "version" : "1.1.0"
           },
           {
             "service" : "eu.exeris.caps.serviceboundarycore.api.ServiceLifecycleHooks",
@@ -26,7 +26,7 @@
           },
           {
             "service" : "eu.exeris.caps.serviceboundarycore.api.RequestFilterChain",
-            "version" : "1.0.0"
+            "version" : "1.1.0"
           }
         ],
         "requires" : [ ],

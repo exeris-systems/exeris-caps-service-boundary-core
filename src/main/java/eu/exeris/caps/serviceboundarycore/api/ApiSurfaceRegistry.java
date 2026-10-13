@@ -86,6 +86,11 @@ public interface ApiSurfaceRegistry extends HttpHandler {
      * Dispatches an incoming HTTP exchange to the matched route handler, or responds
      * with 404 (Not Found) or 405 (Method Not Allowed) if no route matches.
      *
+     * <p>Between route match and handler the registered {@link AdmissionFilter}s run in order, each
+     * with an {@link AdmissionContext} bound. The handler runs only when every filter passed, and it
+     * runs inside the {@link RequestContext} the filters established: its principal is the one an
+     * admission filter verified, never one taken from the request itself.
+     *
      * @param exchange the incoming HTTP exchange
      */
     @Override
