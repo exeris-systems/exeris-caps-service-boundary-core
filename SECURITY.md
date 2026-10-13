@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
+| `main` (default branch) | Yes — no release has been published |
 
 ## Reporting a Vulnerability
 

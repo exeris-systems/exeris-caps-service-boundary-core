@@ -2,11 +2,13 @@
 
 Substrate aggregate capability for the Service Boundary family (IDP, PIM, OMS, Headless CMS API). Provides the foundational API surface registry, service lifecycle hooks, and request context execution pipeline on top of the Exeris kernel SPIs. Runs kernel-direct with zero Spring, Netty, or servlet dependencies.
 
+Status: proof of concept, built against `exeris-kernel` 0.13.0-SNAPSHOT. The API is not stable and no artefact has been published.
+
 ## Where it sits
 
 - **Layer:** Tier 2 — Layer 1 Substrate Aggregate per `high-level-architecture.md` §3.2.
 - **Substrate dependency:** Sits directly on `exeris-kernel-spi` (HTTP, Security, Context).
-- **Consuming capabilities:** Foundation for 23 Service Boundary platform capabilities (Layer 4) and domain primitives (Layer 5), including `multi-tenancy`, `audit-trail`, `rbac-policy`, `rest-emission`, and `contact-graph`.
+- **Consuming capabilities:** specified as the base for the Service Boundary platform capabilities (Layer 4) and domain primitives (Layer 5). Of the caps that exist today, `exeris-caps-audit-trail`, `exeris-caps-federated-login` and `exeris-caps-token-issuer` depend on it.
 - **Wall boundary (ADR-006 / ADR-055):** Crosses no Spring, Netty, or servlet boundaries; exposes only `eu.exeris.caps.serviceboundarycore.api.*` across capabilities.
 
 ## Build & test
@@ -18,6 +20,8 @@ Requires JDK 25 LTS and Maven 3.9+.
 mvn compile -Dexeris.codegen.skip=true   # pass 1: seed processor metadata
 mvn verify                               # pass 2: generate manifest, validate DAG and Wall
 ```
+
+The upstreams are not on Maven Central. `exeris-sdk` v0.12.0 and `exeris-tooling` v0.9.0 are built from source at those tags, and `exeris-kernel` 0.13.0-SNAPSHOT is resolved from GitHub Packages, which needs a token with `read:packages`. [`.github/workflows/build.yml`](.github/workflows/build.yml) is the exact sequence, and [`.github/maven-settings.xml`](.github/maven-settings.xml) the repository configuration it uses.
 
 Single module test execution:
 ```bash
@@ -44,7 +48,9 @@ Precedence: HLA §3.2 & ADR-024 outrank repository README; code comments reflect
 
 ## License
 
-Source-available under the [Exeris Commercial License](LICENSE) (BSL-style) per ADR-023. Production use requires an active Platform SKU subscription or Platform-tier license. Evaluation and audit are royalty-free.
+Exeris Commercial License 1.1 — see [`LICENSE`](LICENSE). `exeris-caps-service-boundary-core` is a `commercial` capability under [ADR-023](https://github.com/exeris-systems/exeris-docs/blob/main/adr/ADR-023-capability-licensing-taxonomy.md): the source is available to read, build, test and evaluate, and production use requires a commercial licence.
+
+The cap enforces that at boot. It registers a kernel `EntitlementRequirement` whose capability id is `exeris-caps-service-boundary-core`, and in a production-class environment the kernel's contract gate refuses to start unless a signed licence manifest lists that id among its entitlements ([ADR-088](https://github.com/exeris-systems/exeris-docs/blob/main/adr/ADR-088-cryptographic-license-manifest-and-offline-verification.md), [ADR-089](https://github.com/exeris-systems/exeris-docs/blob/main/adr/ADR-089-capability-entitlement-enforcement-and-runtime-contract.md)).
 
 ## Contributing
 
