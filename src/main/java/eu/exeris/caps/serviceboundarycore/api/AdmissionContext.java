@@ -14,6 +14,8 @@ import eu.exeris.kernel.spi.security.PrincipalContext;
  * {@link RequestContext#principal()} is the one an admission filter established, and nothing on the
  * handler's side can replace it.
  *
+ * @apiNote An admission context is confined to the thread that runs the request's filters. It is
+ *     bound for the duration of that run only; it must not be stored or handed to another thread.
  * @since 0.1.0
  */
 public interface AdmissionContext {
