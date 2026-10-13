@@ -31,7 +31,7 @@ public interface BoundaryServiceHook {
     /**
      * Invoked during graceful shutdown within the remaining drain budget.
      *
-     * @param remaining remaining duration of the drain budget
+     * @param remaining what is left of the drain budget when this hook is invoked
      * @throws Exception if draining fails
      */
     default void onDrain(Duration remaining) throws Exception {}

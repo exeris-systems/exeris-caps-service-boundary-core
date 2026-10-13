@@ -42,7 +42,7 @@ class ServiceBoundaryCoreModuleTest {
 
             @Override
             public void onDrain(Duration remaining) {
-                events.add("hook1:drain:" + remaining.toSeconds());
+                events.add("hook1:drain:" + Math.round(remaining.toMillis() / 1000.0));
             }
 
             @Override
@@ -64,7 +64,7 @@ class ServiceBoundaryCoreModuleTest {
 
             @Override
             public void onDrain(Duration remaining) {
-                events.add("hook2:drain:" + remaining.toSeconds());
+                events.add("hook2:drain:" + Math.round(remaining.toMillis() / 1000.0));
             }
 
             @Override

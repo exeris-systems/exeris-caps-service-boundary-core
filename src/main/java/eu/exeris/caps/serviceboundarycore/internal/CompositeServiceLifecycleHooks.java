@@ -14,7 +14,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Thread-safe composite implementation of {@link ServiceLifecycleHooks}.
  *
  * <p>Drives registered hooks in registration order during {@code initialize} and
- * {@code ready}, and in reverse order during {@code drain} and {@code terminate}.
+ * {@code ready}, and in reverse order during {@code drain} and {@code terminate}. Each draining hook
+ * receives what is left of the drain budget; a hook that fails does not stop the later ones, and the
+ * first failure is rethrown once every hook has been given its turn.
  *
  * @since 0.1.0
  */
@@ -68,8 +70,23 @@ public final class CompositeServiceLifecycleHooks implements ServiceLifecycleHoo
         // Reverse order for drain
         List<BoundaryServiceHook> reversed = new ArrayList<>(hooks);
         Collections.reverse(reversed);
+        long deadline = System.nanoTime() + Math.max(0L, remaining.toNanos());
+        Exception first = null;
         for (BoundaryServiceHook hook : reversed) {
-            hook.onDrain(remaining);
+            Duration left = Duration.ofNanos(Math.max(0L, deadline - System.nanoTime()));
+            try {
+                hook.onDrain(left);
+            } catch (Exception ex) {
+                if (first == null) {
+                    first = ex;
+                } else {
+                    first.addSuppressed(ex);
+                }
+                LOG.log(System.Logger.Level.WARNING, "Boundary hook failed to drain; continuing with the remaining hooks", ex);
+            }
+        }
+        if (first != null) {
+            throw first;
         }
     }
 
