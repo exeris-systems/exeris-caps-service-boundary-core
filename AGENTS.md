@@ -51,7 +51,7 @@ License: `commercial` (Exeris Commercial License 1.1, source-available, public v
 ## 4. `.agents/` discovery
 
 - `.agents/manifest.yaml` — imports the organisation bundle `exeris-agents`, pinned by version, commit and digest.
-- `.agents/vendor/exeris-agents-1.3.0/` — the vendored bundle: policies, base schemas and the hook dispatcher. Never edit it in place; bumping it means re-vendoring.
+- `.agents/vendor/exeris-agents-2.1.0/` — the vendored bundle: policies, base schemas and the hook dispatcher. Never edit it in place; bumping it means re-vendoring.
 
 This repository authors no profiles, skills, workflows or hooks of its own.
 
