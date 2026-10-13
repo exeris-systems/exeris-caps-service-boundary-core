@@ -48,19 +48,28 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
         this(new DefaultApiSurfaceRegistry(), new CompositeServiceLifecycleHooks());
     }
 
+    /**
+     * Creates the module around the given registry and lifecycle hooks.
+     *
+     * @param registry       the route and admission registry; non-null
+     * @param lifecycleHooks the boundary lifecycle hooks; non-null
+     */
     public ServiceBoundaryCoreModule(ApiSurfaceRegistry registry, ServiceLifecycleHooks lifecycleHooks) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.lifecycleHooks = Objects.requireNonNull(lifecycleHooks, "lifecycleHooks");
     }
 
+    /** Returns the route and admission registry this module provides. */
     public ApiSurfaceRegistry apiSurfaceRegistry() {
         return registry;
     }
 
+    /** Returns the request filter chain of the registry. */
     public RequestFilterChain requestFilterChain() {
         return registry.filterChain();
     }
 
+    /** Returns the boundary lifecycle hooks this module provides. */
     public ServiceLifecycleHooks serviceLifecycleHooks() {
         return lifecycleHooks;
     }
