@@ -137,6 +137,146 @@ class AdmissionContextPropagationTest {
         assertThat(passed).isTrue();
     }
 
+    @Test
+    @DisplayName("a retained admission context refuses authenticate once the handler runs")
+    void retainedContextCannotAuthenticateAfterSeal() {
+        TestPrincipal original = new TestPrincipal(SUBJECT, Optional.of(TENANT));
+        AtomicReference<AdmissionContext> retained = new AtomicReference<>();
+        registry.registerFilter(filter("auth", AdmissionPhase.AUTHENTICATION, (ex, rm) -> {
+            AdmissionContext.current().authenticate(original);
+            retained.set(AdmissionContext.current());
+            return true;
+        }));
+        AtomicReference<Throwable> refusal = new AtomicReference<>();
+        AtomicReference<RequestContext> seen = new AtomicReference<>();
+        route(ex -> {
+            refusal.set(attempt(() -> retained.get().authenticate(new TestPrincipal(UUID.randomUUID(), Optional.empty()))));
+            seen.set(RequestContext.current());
+            ex.respond(HttpStatus.OK);
+        });
+
+        RecordingExchange exchange = get();
+        registry.handle(exchange);
+
+        assertThat(exchange.status).isEqualTo(HttpStatus.OK);
+        assertThat(refusal.get())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Admission has ended");
+        assertThat(seen.get().principal()).contains(original);
+        assertThat(retained.get().requestContext().principal()).contains(original);
+    }
+
+    @Test
+    @DisplayName("a retained admission context cannot authenticate an anonymous request from the handler")
+    void retainedContextCannotAuthenticateAnonymousRequestAfterSeal() {
+        AtomicReference<AdmissionContext> retained = new AtomicReference<>();
+        registry.registerFilter(filter("observer", AdmissionPhase.AUTHENTICATION, (ex, rm) -> {
+            retained.set(AdmissionContext.current());
+            return true;
+        }));
+        AtomicReference<Throwable> refusal = new AtomicReference<>();
+        route(ex -> {
+            refusal.set(attempt(() -> retained.get().authenticate(new TestPrincipal(SUBJECT, Optional.empty()))));
+            ex.respond(HttpStatus.OK);
+        });
+
+        registry.handle(get());
+
+        assertThat(refusal.get())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Admission has ended");
+        assertThat(retained.get().requestContext().principal()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a retained admission context refuses attribute changes once the handler runs")
+    void retainedContextCannotChangeAttributeAfterSeal() {
+        AtomicReference<AdmissionContext> retained = new AtomicReference<>();
+        registry.registerFilter(filter("tag", AdmissionPhase.AUTHENTICATION, (ex, rm) -> {
+            AdmissionContext.current().attribute("scope", "read");
+            retained.set(AdmissionContext.current());
+            return true;
+        }));
+        AtomicReference<Throwable> overwrite = new AtomicReference<>();
+        AtomicReference<Throwable> removal = new AtomicReference<>();
+        AtomicReference<RequestContext> seen = new AtomicReference<>();
+        route(ex -> {
+            overwrite.set(attempt(() -> retained.get().attribute("scope", "admin")));
+            removal.set(attempt(() -> retained.get().attribute("scope", null)));
+            seen.set(RequestContext.current());
+            ex.respond(HttpStatus.OK);
+        });
+
+        registry.handle(get());
+
+        assertThat(overwrite.get())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Admission has ended");
+        assertThat(removal.get())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Admission has ended");
+        assertThat(seen.get().attribute("scope")).contains("read");
+        assertThat(retained.get().requestContext().attribute("scope")).contains("read");
+    }
+
+    @Test
+    @DisplayName("an attribute a filter sets reaches later filters and the handler")
+    void filterAttributeReachesHandler() {
+        AtomicReference<Optional<Object>> seenByAuthz = new AtomicReference<>();
+        registry.registerFilter(filter("tag", AdmissionPhase.AUTHENTICATION, (ex, rm) -> {
+            AdmissionContext.current().attribute("scope", "read");
+            return true;
+        }));
+        registry.registerFilter(filter("authz", AdmissionPhase.AUTHORIZATION, (ex, rm) -> {
+            seenByAuthz.set(RequestContext.current().attribute("scope"));
+            return true;
+        }));
+        AtomicReference<RequestContext> seen = new AtomicReference<>();
+        route(ex -> {
+            seen.set(RequestContext.current());
+            ex.respond(HttpStatus.OK);
+        });
+
+        registry.handle(get());
+
+        assertThat(seenByAuthz.get()).contains("read");
+        assertThat(seen.get().attribute("scope")).contains("read");
+        assertThat(seen.get().attributes()).containsEntry("scope", "read");
+    }
+
+    @Test
+    @DisplayName("setting an attribute to null removes it before the handler runs")
+    void nullAttributeRemovesIt() {
+        registry.registerFilter(filter("tag", AdmissionPhase.AUTHENTICATION, (ex, rm) -> {
+            AdmissionContext.current().attribute("scope", "read");
+            AdmissionContext.current().attribute("trace", "on");
+            return true;
+        }));
+        registry.registerFilter(filter("untag", AdmissionPhase.AUTHORIZATION, (ex, rm) -> {
+            AdmissionContext.current().attribute("scope", null);
+            return true;
+        }));
+        AtomicReference<RequestContext> seen = new AtomicReference<>();
+        route(ex -> {
+            seen.set(RequestContext.current());
+            ex.respond(HttpStatus.OK);
+        });
+
+        registry.handle(get());
+
+        assertThat(seen.get().attribute("scope")).isEmpty();
+        assertThat(seen.get().attributes()).doesNotContainKey("scope").containsEntry("trace", "on");
+    }
+
+    private static Throwable attempt(Runnable action) {
+        try {
+            action.run();
+            return null;
+        } catch (RuntimeException ex) {
+            return ex;
+        }
+    }
+
     private ApiSurfaceRoute route(HttpHandler handler) {
         ApiSurfaceRoute route = ApiSurfaceRoute.builder()
                 .method(HttpMethod.GET)
