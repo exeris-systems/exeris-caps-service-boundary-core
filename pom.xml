@@ -44,7 +44,7 @@
         <maven.compiler.release>25</maven.compiler.release>
 
         <exeris.sdk.version>0.12.0</exeris.sdk.version>
-        <exeris.kernel.version>0.12.0</exeris.kernel.version>
+        <exeris.kernel.version>0.13.0-SNAPSHOT</exeris.kernel.version>
         <exeris.tooling.version>0.9.0-SNAPSHOT</exeris.tooling.version>
 
         <junit.version>5.11.4</junit.version>
@@ -75,6 +75,12 @@
             <groupId>eu.exeris</groupId>
             <artifactId>exeris-kernel-spi</artifactId>
             <version>${exeris.kernel.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>eu.exeris</groupId>
+            <artifactId>exeris-kernel-tck</artifactId>
+            <version>${exeris.kernel.version}</version>
+            <scope>test</scope>
         </dependency>
 
         <!-- JUnit 5 + AssertJ only. This is the ADR-058 dependency contract for the
