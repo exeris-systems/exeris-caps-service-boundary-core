@@ -32,10 +32,10 @@ import java.util.Objects;
  */
 @CapabilityModule
 @CapabilityLifecycle
-@Provides(service = ApiSurfaceRegistry.class, version = "1.0.0")
-@Provides(service = ServiceLifecycleHooks.class, version = "1.0.0")
-@Provides(service = RequestContext.class, version = "1.0.0")
-@Provides(service = RequestFilterChain.class, version = "1.0.0")
+@Provides(service = ApiSurfaceRegistry.class, version = "0.1.0")
+@Provides(service = ServiceLifecycleHooks.class, version = "0.1.0")
+@Provides(service = RequestContext.class, version = "0.1.0")
+@Provides(service = RequestFilterChain.class, version = "0.1.0")
 public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks {
 
     private final ApiSurfaceRegistry registry;

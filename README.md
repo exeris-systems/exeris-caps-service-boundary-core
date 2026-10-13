@@ -11,6 +11,15 @@ Status: proof of concept, built against `exeris-kernel` 0.13.0-SNAPSHOT. The API
 - **Consuming capabilities:** specified as the base for the Service Boundary platform capabilities (Layer 4) and domain primitives (Layer 5). Of the caps that exist today, `exeris-caps-audit-trail`, `exeris-caps-federated-login` and `exeris-caps-token-issuer` depend on it.
 - **Wall boundary (ADR-006 / ADR-055):** Crosses no Spring, Netty, or servlet boundaries; exposes only `eu.exeris.caps.serviceboundarycore.api.*` across capabilities.
 
+## Request admission
+
+`ApiSurfaceRegistry` runs the registered `AdmissionFilter`s between route match and handler, ordered by
+`AdmissionPhase` (pre-admission, rate limiting, authentication, authorisation, post-admission) and then by
+name (ADR-099). Each filter either passes the request on or answers it. A filter that verifies the caller
+records the principal through `AdmissionContext.current().authenticate(...)`, once per request. The handler
+runs inside the resulting `RequestContext`, so `RequestContext.current().principal()` is the identity a
+filter verified and the only one a route uses; the handler has no `AdmissionContext` and cannot change it.
+
 ## Build & test
 
 Requires JDK 25 LTS and Maven 3.9+.
