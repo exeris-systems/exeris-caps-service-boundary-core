@@ -79,7 +79,8 @@ public final class CompositeServiceLifecycleHooks implements ServiceLifecycleHoo
             } catch (Exception ex) {
                 if (first == null) {
                     first = ex;
-                } else {
+                } else if (ex != first) {
+                    // addSuppressed refuses self-suppression; a hook may rethrow a shared instance.
                     first.addSuppressed(ex);
                 }
                 LOG.log(System.Logger.Level.WARNING, "Boundary hook failed to drain; continuing with the remaining hooks", ex);
