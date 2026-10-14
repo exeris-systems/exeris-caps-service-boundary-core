@@ -123,19 +123,24 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     }
 
     private boolean admit(HttpExchange exchange, RouteMatch routeMatch, DefaultAdmissionContext admission) {
+        MatchedHttpExchange tracked = exchange instanceof MatchedHttpExchange matched
+                ? matched
+                : new MatchedHttpExchange(exchange, exchange.pathParams());
         List<AdmissionFilter> orderedFilters = filters();
         for (AdmissionFilter filter : orderedFilters) {
             try {
                 boolean proceed = DefaultAdmissionContext.callWith(admission,
                         () -> DefaultRequestContext.bind(admission.requestContext(),
-                                () -> filter.filter(exchange, routeMatch)));
+                                () -> filter.filter(tracked, routeMatch)));
                 if (!proceed) {
                     LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.name());
                     return false;
                 }
             } catch (Exception ex) {
                 LOG.log(System.Logger.Level.ERROR, "Unhandled exception in admission filter " + filter.name(), ex);
-                exchange.respond(HttpStatus.INTERNAL_SERVER_ERROR);
+                if (!tracked.responded()) {
+                    tracked.respond(HttpStatus.INTERNAL_SERVER_ERROR);
+                }
                 return false;
             }
         }

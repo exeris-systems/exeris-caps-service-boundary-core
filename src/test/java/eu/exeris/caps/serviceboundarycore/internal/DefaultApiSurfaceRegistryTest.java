@@ -456,6 +456,35 @@ class DefaultApiSurfaceRegistryTest {
         }
 
         @Test
+        @DisplayName("filter that responds and then throws yields exactly one response")
+        void filterRespondsThenThrows() {
+            registry.registerFilter(new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
+                @Override public String name() { return "responds-then-fails"; }
+                @Override public eu.exeris.caps.serviceboundarycore.api.AdmissionPhase phase() { return eu.exeris.caps.serviceboundarycore.api.AdmissionPhase.PRE_ADMISSION; }
+                @Override public boolean filter(HttpExchange ex, RouteMatch rm) {
+                    ex.respond(HttpStatus.FORBIDDEN);
+                    throw new IllegalStateException("boom");
+                }
+            });
+            AtomicBoolean invoked = new AtomicBoolean();
+            registry.registerRoute(ApiSurfaceRoute.builder()
+                    .method(HttpMethod.GET)
+                    .pathPattern("/api/test")
+                    .actionName("Test#action")
+                    .handler(ex -> invoked.set(true))
+                    .build());
+
+            RecordingHttpExchange exchange = new RecordingHttpExchange(
+                    HttpRequest.noBody(HttpMethod.GET, "/api/test", HttpVersion.HTTP_1_1, List.of())
+            );
+
+            registry.handle(exchange);
+
+            assertThat(exchange.responses).containsExactly(HttpStatus.FORBIDDEN);
+            assertThat(invoked).isFalse();
+        }
+
+        @Test
         @DisplayName("unregisters filter cleanly")
         void unregistersFilter() {
             eu.exeris.caps.serviceboundarycore.api.AdmissionFilter filter = new eu.exeris.caps.serviceboundarycore.api.AdmissionFilter() {
@@ -478,6 +507,7 @@ class DefaultApiSurfaceRegistryTest {
         private HttpResponse response;
         private HttpStatus status;
         private Object body;
+        private final List<HttpStatus> responses = new ArrayList<>();
         private Map<String, String> pathParams = Map.of();
 
         RecordingHttpExchange(HttpRequest request) {
@@ -498,22 +528,26 @@ class DefaultApiSurfaceRegistryTest {
         public void respond(HttpResponse response) {
             this.response = response;
             this.status = response.status();
+            responses.add(status);
         }
 
         @Override
         public void respond(HttpTypedResponse typedResponse) {
             this.status = typedResponse.status();
+            responses.add(status);
         }
 
         @Override
         public void respond(HttpStatus status, Object body) {
             this.status = status;
             this.body = body;
+            responses.add(status);
         }
 
         @Override
         public void respond(HttpStatus status) {
             this.status = status;
+            responses.add(status);
         }
     }
 }
