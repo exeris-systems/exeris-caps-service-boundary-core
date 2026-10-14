@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.regex.Pattern;
 
 /**
  * Default implementation of {@link ApiSurfaceRegistry} and {@link RequestFilterChain}.
@@ -44,6 +45,8 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     private static final System.Logger LOG = System.getLogger(DefaultApiSurfaceRegistry.class.getName());
 
+    private static final Pattern PARAM_SEGMENT = Pattern.compile("\\{[a-zA-Z0-9_]+\\}");
+
     private static final Comparator<AdmissionFilter> FILTER_COMPARATOR = Comparator
             .comparing(AdmissionFilter::phase)
             .thenComparing(AdmissionFilter::name);
@@ -59,7 +62,8 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         Objects.requireNonNull(route, "route");
         synchronized (routeList) {
             for (ApiSurfaceRoute existing : routeList) {
-                if (existing.method() == route.method() && existing.pathPattern().equals(route.pathPattern())) {
+                if (existing.method() == route.method()
+                        && shape(existing.pathPattern()).equals(shape(route.pathPattern()))) {
                     throw new IllegalStateException("A route is already registered for " + route.method()
                             + " " + route.pathPattern());
                 }
@@ -259,33 +263,20 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     private static HttpStatus unmet(ApiSurfaceRoute route, RequestContext admitted) {
         PrincipalContext principal = admitted.principal().orElse(null);
         for (RouteRequirement requirement : route.requirements()) {
-            switch (requirement.kind()) {
-                case PERMIT_ALL -> { }
-                case AUTHENTICATED -> {
-                    if (principal == null) {
-                        return HttpStatus.UNAUTHORIZED;
-                    }
-                }
-                case ANY_SCOPE -> {
-                    if (principal == null) {
-                        return HttpStatus.UNAUTHORIZED;
-                    }
-                    if (!holdsAnyScope(principal, requirement)) {
-                        return HttpStatus.FORBIDDEN;
-                    }
-                }
-                case ALL_SCOPES -> {
-                    if (principal == null) {
-                        return HttpStatus.UNAUTHORIZED;
-                    }
-                    if (!holdsAllScopes(principal, requirement)) {
-                        return HttpStatus.FORBIDDEN;
-                    }
-                }
+            // An exhaustive switch expression: a requirement kind added to the SPI is a compile error here
+            // (and a MatchException, answered 500, against a newer SPI), never a requirement that is skipped.
+            HttpStatus denial = switch (requirement.kind()) {
+                case PERMIT_ALL -> null;
+                case AUTHENTICATED -> principal == null ? HttpStatus.UNAUTHORIZED : null;
+                case ANY_SCOPE -> principal == null ? HttpStatus.UNAUTHORIZED
+                        : holdsAnyScope(principal, requirement) ? null : HttpStatus.FORBIDDEN;
+                case ALL_SCOPES -> principal == null ? HttpStatus.UNAUTHORIZED
+                        : holdsAllScopes(principal, requirement) ? null : HttpStatus.FORBIDDEN;
                 // An abstention is refused at route construction; reaching it here is a defect, not a permission.
-                case ABSTAIN -> {
-                    return HttpStatus.INTERNAL_SERVER_ERROR;
-                }
+                case ABSTAIN -> HttpStatus.INTERNAL_SERVER_ERROR;
+            };
+            if (denial != null) {
+                return denial;
             }
         }
         return null;
@@ -307,6 +298,14 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             }
         }
         return true;
+    }
+
+    /**
+     * The path pattern with every parameter name erased. Two patterns with the same shape match exactly the
+     * same paths, so only one of them can ever be served and the other must not be registered.
+     */
+    private static String shape(String pathPattern) {
+        return PARAM_SEGMENT.matcher(pathPattern).replaceAll("{}");
     }
 
     private static String stripQueryString(String path) {
