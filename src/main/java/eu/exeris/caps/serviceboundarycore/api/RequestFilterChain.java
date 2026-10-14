@@ -15,6 +15,9 @@ public interface RequestFilterChain {
      * Registers an admission filter into the chain.
      *
      * @param filter filter to register; non-null
+     * @throws UnsupportedOperationException if the chain accepts no filters, as {@link #empty()} does
+     * @throws IllegalArgumentException if the filter's name is blank
+     * @throws IllegalStateException if a filter with the same name is already registered
      */
     void registerFilter(AdmissionFilter filter);
 
