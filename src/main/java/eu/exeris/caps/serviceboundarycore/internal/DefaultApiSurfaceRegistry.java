@@ -1,17 +1,11 @@
 package eu.exeris.caps.serviceboundarycore.internal;
 
+import eu.exeris.caps.serviceboundarycore.api.AdmissionFilter;
 import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRegistry;
 import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRoute;
-import eu.exeris.caps.serviceboundarycore.api.RouteMatch;
-import eu.exeris.kernel.spi.http.HttpExchange;
-import eu.exeris.kernel.spi.http.HttpHeader;
-import eu.exeris.kernel.spi.http.HttpMethod;
-import eu.exeris.kernel.spi.http.HttpResponse;
-import eu.exeris.kernel.spi.http.HttpStatus;
-import eu.exeris.kernel.spi.http.HttpVersion;
-
-import eu.exeris.caps.serviceboundarycore.api.AdmissionFilter;
+import eu.exeris.caps.serviceboundarycore.api.RequestContext;
 import eu.exeris.caps.serviceboundarycore.api.RequestFilterChain;
+import eu.exeris.caps.serviceboundarycore.api.RouteMatch;
 import eu.exeris.kernel.spi.http.HttpExchange;
 import eu.exeris.kernel.spi.http.HttpHeader;
 import eu.exeris.kernel.spi.http.HttpMethod;
@@ -34,6 +28,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Default implementation of {@link ApiSurfaceRegistry} and {@link RequestFilterChain}.
  *
  * <p>Thread-safe route registry, filter chain, and dispatcher for Service Boundary SKUs.
+ *
+ * <p>Each matched request gets one {@link DefaultAdmissionContext}. The filters run with it and with the
+ * {@link RequestContext} established so far bound; the handler runs only after every filter passed, inside
+ * the sealed {@link RequestContext}, so the principal a handler reads is the one admission established.
  *
  * @since 0.1.0
  */
@@ -91,10 +89,19 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     @Override
     public boolean execute(HttpExchange exchange, RouteMatch routeMatch) {
+        DefaultAdmissionContext admission = DefaultAdmissionContext.isBound()
+                ? DefaultAdmissionContext.currentInternal()
+                : DefaultAdmissionContext.open();
+        return admit(exchange, routeMatch, admission);
+    }
+
+    private boolean admit(HttpExchange exchange, RouteMatch routeMatch, DefaultAdmissionContext admission) {
         List<AdmissionFilter> orderedFilters = filters();
         for (AdmissionFilter filter : orderedFilters) {
             try {
-                boolean proceed = filter.filter(exchange, routeMatch);
+                boolean proceed = DefaultAdmissionContext.callWith(admission,
+                        () -> DefaultRequestContext.callWith(admission.requestContext(),
+                                () -> filter.filter(exchange, routeMatch)));
                 if (!proceed) {
                     LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.name());
                     return false;
@@ -172,10 +179,13 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                     ? exchange
                     : new MatchedHttpExchange(exchange, match.pathParams());
             try {
-                if (!execute(effectiveExchange, match)) {
+                DefaultAdmissionContext admission = DefaultAdmissionContext.open();
+                if (!admit(effectiveExchange, match, admission)) {
                     return;
                 }
-                match.route().handler().handle(effectiveExchange);
+                admission.seal();
+                DefaultRequestContext.runWith(admission.requestContext(),
+                        () -> match.route().handler().handle(effectiveExchange));
             } catch (Exception ex) {
                 LOG.log(System.Logger.Level.ERROR, "Unhandled exception in route handler for " + match.route(), ex);
                 exchange.respond(HttpStatus.INTERNAL_SERVER_ERROR);
