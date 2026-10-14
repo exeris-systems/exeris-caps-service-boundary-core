@@ -48,6 +48,28 @@ class CompositeServiceLifecycleHooksTest {
     }
 
     @Test
+    @DisplayName("hooks that throw one shared exception instance all run and it is rethrown once")
+    void sharedExceptionInstance() {
+        CompositeServiceLifecycleHooks hooks = new CompositeServiceLifecycleHooks();
+        List<String> log = new ArrayList<>();
+        IllegalStateException shared = new IllegalStateException("shared");
+        for (String name : List.of("a", "b", "c")) {
+            hooks.registerHook(new BoundaryServiceHook() {
+                @Override
+                public void onDrain(Duration remaining) {
+                    log.add(name);
+                    throw shared;
+                }
+            });
+        }
+
+        assertThatThrownBy(() -> hooks.onServiceDrain(Duration.ofSeconds(5)))
+                .isSameAs(shared);
+        assertThat(log).containsExactly("c", "b", "a");
+        assertThat(shared.getSuppressed()).isEmpty();
+    }
+
+    @Test
     @DisplayName("each hook receives what is left of the budget")
     void budgetShrinks() throws Exception {
         CompositeServiceLifecycleHooks hooks = new CompositeServiceLifecycleHooks();

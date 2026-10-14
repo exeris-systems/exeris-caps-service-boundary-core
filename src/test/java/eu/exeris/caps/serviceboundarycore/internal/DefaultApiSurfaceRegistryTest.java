@@ -288,6 +288,32 @@ class DefaultApiSurfaceRegistryTest {
         }
 
         @Test
+        @DisplayName("patterns that differ only in parameter names are one route and the second is refused")
+        void aliasedParameterRouteRefused() {
+            HttpHandler first = ex -> { };
+            registry.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.GET).pathPattern("/a/{id}")
+                    .actionName("A#a").handler(first).build());
+
+            assertThatThrownBy(() -> registry.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.GET)
+                    .pathPattern("/a/{name}").actionName("B#b").handler(ex -> { }).build()))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(registry.routeCount()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the same parameterised shape is allowed for another method or another literal segment")
+        void distinctShapesAllowed() {
+            registry.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.GET).pathPattern("/a/{id}")
+                    .actionName("A#a").handler(ex -> { }).build());
+            registry.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.POST).pathPattern("/a/{name}")
+                    .actionName("B#b").handler(ex -> { }).build());
+            registry.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.GET).pathPattern("/b/{id}")
+                    .actionName("C#c").handler(ex -> { }).build());
+
+            assertThat(registry.routeCount()).isEqualTo(3);
+        }
+
+        @Test
         @DisplayName("a second route for the same method and pattern is refused")
         void duplicateRouteRefused() {
             registry.registerRoute(route("A#a", ex -> { }));
