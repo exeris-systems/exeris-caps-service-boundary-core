@@ -15,6 +15,9 @@ public interface RequestFilterChain {
      * Registers an admission filter into the chain.
      *
      * @param filter filter to register; non-null
+     * @throws UnsupportedOperationException if the chain accepts no filters, as {@link #empty()} does
+     * @throws IllegalArgumentException if the filter's name is blank
+     * @throws IllegalStateException if a filter with the same name is already registered
      */
     void registerFilter(AdmissionFilter filter);
 
@@ -43,13 +46,15 @@ public interface RequestFilterChain {
     boolean execute(HttpExchange exchange, RouteMatch routeMatch);
 
     /**
-     * Returns a no-op empty filter chain.
+     * Returns an empty filter chain that admits every request and accepts no filters.
      *
-     * @return empty filter chain
+     * @return empty filter chain whose {@code registerFilter} throws {@link UnsupportedOperationException}
      */
     static RequestFilterChain empty() {
         return new RequestFilterChain() {
-            @Override public void registerFilter(AdmissionFilter filter) {}
+            @Override public void registerFilter(AdmissionFilter filter) {
+                throw new UnsupportedOperationException("The empty filter chain accepts no filters");
+            }
             @Override public boolean unregisterFilter(AdmissionFilter filter) { return false; }
             @Override public List<AdmissionFilter> filters() { return List.of(); }
             @Override public boolean execute(HttpExchange exchange, RouteMatch routeMatch) { return true; }

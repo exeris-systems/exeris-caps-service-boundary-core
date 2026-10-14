@@ -7,12 +7,14 @@ import eu.exeris.kernel.spi.security.PrincipalContext;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Standard {@link AdmissionContext}: mutable while the admission filters run, sealed before the handler.
  *
  * <p>Filters of one request run sequentially on the request's thread, so the state needs no
- * synchronisation; it is bound through a {@link ScopedValue} and never escapes the request.
+ * synchronisation; it is bound through a {@link ScopedValue} and never escapes the request. The thread
+ * that opens the context owns it, and every call from another thread is refused.
  *
  * @since 0.1.0
  */
@@ -22,7 +24,9 @@ public final class DefaultAdmissionContext implements AdmissionContext {
 
     private final RequestContext seed;
     private final Map<String, Object> attributes;
+    private final Thread owner = Thread.currentThread();
     private PrincipalContext principal;
+    private UUID sessionId;
     private String tenantId;
     private boolean sealed;
 
@@ -30,7 +34,7 @@ public final class DefaultAdmissionContext implements AdmissionContext {
         this.seed = Objects.requireNonNull(seed, "seed");
         this.attributes = new LinkedHashMap<>(seed.attributes());
         this.principal = seed.principal().orElse(null);
-        this.tenantId = seed.tenantId();
+        this.tenantId = seed.tenantId().orElse(null);
     }
 
     /**
@@ -67,12 +71,23 @@ public final class DefaultAdmissionContext implements AdmissionContext {
 
     @Override
     public void authenticate(PrincipalContext principal) {
+        record(principal, null);
+    }
+
+    @Override
+    public void authenticate(PrincipalContext principal, UUID sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        record(principal, sessionId);
+    }
+
+    private void record(PrincipalContext principal, UUID sessionId) {
         Objects.requireNonNull(principal, "principal");
         requireOpen();
         if (this.principal != null) {
             throw new IllegalStateException("The request already has an authenticated principal");
         }
         this.principal = principal;
+        this.sessionId = sessionId;
         principal.tenantId().ifPresent(tenant -> this.tenantId = tenant.toString());
     }
 
@@ -89,20 +104,33 @@ public final class DefaultAdmissionContext implements AdmissionContext {
 
     @Override
     public RequestContext requestContext() {
-        return RequestContext.builder()
-                .tenantId(tenantId)
+        requireOwner();
+        DefaultRequestContext.Builder builder = new DefaultRequestContext.Builder();
+        if (tenantId != null) {
+            builder.tenantId(tenantId);
+        }
+        return builder
                 .correlationId(seed.correlationId())
                 .principal(principal)
+                .sessionId(sessionId)
                 .attributes(attributes)
                 .build();
     }
 
     /** Ends admission: after this, the context the handler runs in can no longer change. */
     void seal() {
+        requireOwner();
         sealed = true;
     }
 
+    private void requireOwner() {
+        if (Thread.currentThread() != owner) {
+            throw new IllegalStateException("An admission context is confined to the thread that runs the request's filters");
+        }
+    }
+
     private void requireOpen() {
+        requireOwner();
         if (sealed) {
             throw new IllegalStateException("Admission has ended for this request");
         }

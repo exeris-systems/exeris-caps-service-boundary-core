@@ -53,7 +53,7 @@ public interface ServiceLifecycleHooks {
      * Drives the {@link BoundaryServiceHook#onDrain(Duration)} phase in reverse order.
      *
      * @param remaining remaining duration of the drain budget
-     * @throws Exception if any hook throws during draining
+     * @throws Exception the first failure, rethrown after every hook has been given its turn
      */
     void onServiceDrain(Duration remaining) throws Exception;
 
