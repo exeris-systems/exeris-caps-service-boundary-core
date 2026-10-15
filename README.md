@@ -57,6 +57,8 @@ mvn test
 - [High-Level Architecture (HLA)](https://github.com/exeris-systems/exeris-docs/blob/main/high-level-architecture.md) — Tier 2 capability map and Service Boundary family.
 - [B2B Technical Whitepaper](https://github.com/exeris-systems/exeris-docs/blob/main/b2b-technical-whitepaper.md) — SKU composition model.
 
+- [Roadmap](ROADMAP.md) — what the proof of concept does not cover yet.
+
 Precedence: HLA §3.2 & ADR-024 outrank repository README; code comments reflect current contract.
 
 ## Governing ADRs
