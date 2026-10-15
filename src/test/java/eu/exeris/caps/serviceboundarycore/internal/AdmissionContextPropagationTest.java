@@ -6,6 +6,7 @@ import eu.exeris.caps.serviceboundarycore.api.AdmissionPhase;
 import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRoute;
 import eu.exeris.caps.serviceboundarycore.api.RequestContext;
 import eu.exeris.caps.serviceboundarycore.api.RouteMatch;
+import eu.exeris.caps.serviceboundarycore.api.TenantConflictException;
 import eu.exeris.kernel.spi.http.HttpExchange;
 import eu.exeris.kernel.spi.http.HttpHandler;
 import eu.exeris.kernel.spi.http.HttpMethod;
@@ -447,6 +448,94 @@ class AdmissionContextPropagationTest {
         assertThat(exchange.responses).isEqualTo(1);
     }
 
+    @Test
+    @DisplayName("tenant conflict refused with 403 bare status naming no tenant")
+    void tenantConflictRefused() {
+        UUID otherTenant = UUID.randomUUID();
+        AtomicReference<TenantConflictException> thrown = new AtomicReference<>();
+        registry.registerFilter(filter("auth", AdmissionPhase.AUTHENTICATION, (ex, rm) -> {
+            try {
+                AdmissionContext.current().authenticate(new TestPrincipal(SUBJECT, Optional.of(otherTenant)));
+            } catch (TenantConflictException e) {
+                thrown.set(e);
+                throw e;
+            }
+            return true;
+        }));
+        AtomicReference<Boolean> handlerRan = new AtomicReference<>(false);
+        route(ex -> {
+            handlerRan.set(true);
+            ex.respond(HttpStatus.OK);
+        });
+
+        RecordingExchange exchange = get();
+        RequestContext hostContext = RequestContext.builder().tenantId(TENANT.toString()).build();
+        RequestContext.runWith(hostContext, () -> registry.handle(exchange));
+
+        assertThat(exchange.status).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(exchange.body()).isNull();
+        assertThat(handlerRan.get()).isFalse();
+        assertThat(thrown.get()).isNotNull();
+        assertThat(thrown.get().getMessage()).doesNotContain(TENANT.toString(), otherTenant.toString());
+    }
+
+    @Test
+    @DisplayName("authenticate throws TenantConflictException when principal tenant differs from host tenant")
+    void authenticateThrowsTenantConflictException() {
+        UUID otherTenant = UUID.randomUUID();
+        RequestContext hostContext = RequestContext.builder().tenantId(TENANT.toString()).build();
+        RequestContext.runWith(hostContext, () -> {
+            DefaultAdmissionContext admission = DefaultAdmissionContext.open();
+            assertThatThrownBy(() -> admission.authenticate(new TestPrincipal(SUBJECT, Optional.of(otherTenant))))
+                    .isInstanceOf(TenantConflictException.class)
+                    .hasMessageNotContaining(TENANT.toString())
+                    .hasMessageNotContaining(otherTenant.toString());
+        });
+    }
+
+    @Test
+    @DisplayName("equal tenant admitted and handler runs with the bound tenant")
+    void equalTenantAdmitted() {
+        registry.registerFilter(filter("auth", AdmissionPhase.AUTHENTICATION, (ex, rm) -> {
+            AdmissionContext.current().authenticate(new TestPrincipal(SUBJECT, Optional.of(TENANT)));
+            return true;
+        }));
+        AtomicReference<RequestContext> seen = new AtomicReference<>();
+        route(ex -> {
+            seen.set(RequestContext.current());
+            ex.respond(HttpStatus.OK);
+        });
+
+        RecordingExchange exchange = get();
+        RequestContext hostContext = RequestContext.builder().tenantId(TENANT.toString()).build();
+        RequestContext.runWith(hostContext, () -> registry.handle(exchange));
+
+        assertThat(exchange.status).isEqualTo(HttpStatus.OK);
+        assertThat(seen.get().tenantId()).contains(TENANT.toString());
+        assertThat(seen.get().principal()).isPresent();
+    }
+
+    @Test
+    @DisplayName("unbound host tenant takes the principal tenant")
+    void unboundHostTenantTakesPrincipalTenant() {
+        registry.registerFilter(filter("auth", AdmissionPhase.AUTHENTICATION, (ex, rm) -> {
+            AdmissionContext.current().authenticate(new TestPrincipal(SUBJECT, Optional.of(TENANT)));
+            return true;
+        }));
+        AtomicReference<RequestContext> seen = new AtomicReference<>();
+        route(ex -> {
+            seen.set(RequestContext.current());
+            ex.respond(HttpStatus.OK);
+        });
+
+        RecordingExchange exchange = get();
+        // Host has not bound a tenant
+        registry.handle(exchange);
+
+        assertThat(exchange.status).isEqualTo(HttpStatus.OK);
+        assertThat(seen.get().tenantId()).contains(TENANT.toString());
+    }
+
     private ApiSurfaceRoute routeRequiring(List<RouteRequirement> requirements, HttpHandler handler) {
         ApiSurfaceRoute route = ApiSurfaceRoute.builder()
                 .method(HttpMethod.GET)
@@ -533,6 +622,7 @@ class AdmissionContextPropagationTest {
 
     private static final class RecordingExchange implements HttpExchange {
         private final HttpRequest request;
+        private HttpResponse response;
         private HttpStatus status;
         private int responses;
 
@@ -547,6 +637,7 @@ class AdmissionContextPropagationTest {
 
         @Override
         public void respond(HttpResponse response) {
+            this.response = response;
             this.status = response.status();
             responses++;
         }
@@ -555,6 +646,23 @@ class AdmissionContextPropagationTest {
         public void respond(HttpStatus status) {
             this.status = status;
             responses++;
+        }
+
+        public String body() {
+            if (response == null || !response.hasBody()) {
+                return null;
+            }
+            return java.nio.charset.StandardCharsets.UTF_8.decode(response.body().segment().asByteBuffer()).toString();
+        }
+
+        public Optional<String> header(String name) {
+            if (response == null) {
+                return Optional.empty();
+            }
+            return response.headers().stream()
+                    .filter(h -> h.nameEqualsIgnoreCase(name))
+                    .map(eu.exeris.kernel.spi.http.HttpHeader::value)
+                    .findFirst();
         }
     }
 }

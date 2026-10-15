@@ -6,6 +6,7 @@ import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRoute;
 import eu.exeris.caps.serviceboundarycore.api.RequestContext;
 import eu.exeris.caps.serviceboundarycore.api.RequestFilterChain;
 import eu.exeris.caps.serviceboundarycore.api.RouteMatch;
+import eu.exeris.caps.serviceboundarycore.api.TenantConflictException;
 import eu.exeris.kernel.spi.http.HttpExchange;
 import eu.exeris.kernel.spi.http.HttpHeader;
 import eu.exeris.kernel.spi.http.HttpMethod;
@@ -53,13 +54,43 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     private final List<ApiSurfaceRoute> routeList = new CopyOnWriteArrayList<>();
     private final List<AdmissionFilter> filterList = new CopyOnWriteArrayList<>();
+    private volatile boolean strictRoutes;
+    private volatile boolean frozen;
 
     public DefaultApiSurfaceRegistry() {
+        this(false);
+    }
+
+    public DefaultApiSurfaceRegistry(boolean strictRoutes) {
+        this.strictRoutes = strictRoutes;
+    }
+
+    public void freeze() {
+        this.frozen = true;
+    }
+
+    public boolean isFrozen() {
+        return frozen;
+    }
+
+    public boolean isStrictRoutes() {
+        return strictRoutes;
+    }
+
+    private void checkNotFrozen() {
+        if (frozen) {
+            throw new IllegalStateException("The registry is frozen and can no longer be modified");
+        }
     }
 
     @Override
     public void registerRoute(ApiSurfaceRoute route) {
         Objects.requireNonNull(route, "route");
+        checkNotFrozen();
+        if (strictRoutes && route.requirements().isEmpty()) {
+            throw new IllegalStateException("Strict route mode: route " + route.method() + " "
+                    + route.pathPattern() + " declared no requirements");
+        }
         synchronized (routeList) {
             for (ApiSurfaceRoute existing : routeList) {
                 if (existing.method() == route.method()
@@ -76,12 +107,14 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     @Override
     public boolean unregisterRoute(ApiSurfaceRoute route) {
         Objects.requireNonNull(route, "route");
+        checkNotFrozen();
         return routeList.removeIf(existing -> existing.equals(route) && existing.handler() == route.handler());
     }
 
     @Override
     public void registerFilter(AdmissionFilter filter) {
         Objects.requireNonNull(filter, "filter");
+        checkNotFrozen();
         String name = filter.name();
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("An admission filter needs a non-blank name");
@@ -103,6 +136,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     @Override
     public boolean unregisterFilter(AdmissionFilter filter) {
         Objects.requireNonNull(filter, "filter");
+        checkNotFrozen();
         return filterList.remove(filter);
     }
 
@@ -140,6 +174,12 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                     LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.name());
                     return false;
                 }
+            } catch (TenantConflictException ex) {
+                LOG.log(System.Logger.Level.DEBUG, "Tenant conflict in admission filter {0}", filter.name());
+                if (!tracked.responded()) {
+                    tracked.respond(HttpStatus.FORBIDDEN);
+                }
+                return false;
             } catch (Exception ex) {
                 LOG.log(System.Logger.Level.ERROR, "Unhandled exception in admission filter " + filter.name(), ex);
                 if (!tracked.responded()) {
@@ -197,6 +237,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     @Override
     public void clear() {
+        checkNotFrozen();
         routeList.clear();
         filterList.clear();
     }
@@ -228,6 +269,11 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                     match.route().handler().handle(effectiveExchange);
                     return null;
                 });
+            } catch (TenantConflictException ex) {
+                LOG.log(System.Logger.Level.DEBUG, "Tenant conflict in route processing", ex);
+                if (!effectiveExchange.responded()) {
+                    effectiveExchange.respond(HttpStatus.FORBIDDEN);
+                }
             } catch (Exception ex) {
                 LOG.log(System.Logger.Level.ERROR, "Unhandled exception in route handler for " + match.route(), ex);
                 if (!effectiveExchange.responded()) {

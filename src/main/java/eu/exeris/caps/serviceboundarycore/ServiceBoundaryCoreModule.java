@@ -59,6 +59,24 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
         this.lifecycleHooks = Objects.requireNonNull(lifecycleHooks, "lifecycleHooks");
     }
 
+    /**
+     * Returns a fluent builder for configuring a {@link ServiceBoundaryCoreModule}.
+     *
+     * @return builder instance
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Reports whether strict route mode is enabled.
+     *
+     * @return true if strict routes are enforced
+     */
+    public boolean isStrictRoutes() {
+        return registry instanceof DefaultApiSurfaceRegistry r && r.isStrictRoutes();
+    }
+
     /** Returns the route and admission registry this module provides. */
     public ApiSurfaceRegistry apiSurfaceRegistry() {
         return registry;
@@ -81,6 +99,9 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
 
     @Override
     public void ready() throws Exception {
+        if (registry instanceof DefaultApiSurfaceRegistry r) {
+            r.freeze();
+        }
         lifecycleHooks.onServiceReady();
     }
 
@@ -92,5 +113,40 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
     @Override
     public void terminate() {
         lifecycleHooks.onServiceTerminate();
+    }
+
+    /** Fluent builder for {@link ServiceBoundaryCoreModule}. */
+    public static final class Builder {
+        private ApiSurfaceRegistry registry;
+        private ServiceLifecycleHooks lifecycleHooks;
+        private boolean strictRoutes;
+
+        public Builder registry(ApiSurfaceRegistry registry) {
+            this.registry = registry;
+            return this;
+        }
+
+        public Builder lifecycleHooks(ServiceLifecycleHooks lifecycleHooks) {
+            this.lifecycleHooks = lifecycleHooks;
+            return this;
+        }
+
+        public Builder strictRoutes(boolean strictRoutes) {
+            this.strictRoutes = strictRoutes;
+            return this;
+        }
+
+        public ServiceBoundaryCoreModule build() {
+            if (strictRoutes && this.registry != null) {
+                throw new IllegalStateException("Strict route mode is a property of the default registry and cannot be combined with a custom registry");
+            }
+            ApiSurfaceRegistry reg = this.registry != null
+                    ? this.registry
+                    : new DefaultApiSurfaceRegistry(strictRoutes);
+            ServiceLifecycleHooks hooks = this.lifecycleHooks != null
+                    ? this.lifecycleHooks
+                    : new CompositeServiceLifecycleHooks();
+            return new ServiceBoundaryCoreModule(reg, hooks);
+        }
     }
 }

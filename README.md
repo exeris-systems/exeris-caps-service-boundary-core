@@ -28,11 +28,41 @@ the handler has no `AdmissionContext` and cannot change it.
   capability reads the caller's session from.
 - **No implicit tenant.** `RequestContext.tenantId()` is empty until the host binds a tenant or an
   authenticated principal carries one.
+- **Tenant conflict is refused.** When the host has already bound a tenant and the authenticated
+  principal carries a different tenant, the request is refused with 403 (bare status, naming no tenant).
+  Equal tenants, or a host with no bound tenant, keep normal admission.
 - **Route requirements are enforced.** After the filters, the registry answers 401 when a route requires an
   authenticated principal and none was recorded, and 403 when the principal lacks a required scope. A route
   with no requirement, or `RouteRequirement.permitAll()`, is served anonymously.
+- **Strict routes mode.** When enabled on `ServiceBoundaryCoreModule` (via `ServiceBoundaryCoreModule.builder().strictRoutes(true).build()`),
+  `registerRoute` refuses routes with an empty requirement list by throwing `IllegalStateException`. Routes
+  explicitly declared anonymous must use `RouteRequirement.permitAll()`. Non-strict mode preserves the default behaviour.
+- **Frozen registry.** `ServiceBoundaryCoreModule.ready()` freezes the `ApiSurfaceRegistry` (a custom
+  `ApiSurfaceRegistry` implementation is responsible for its own freezing). Once frozen, all mutators
+  (`registerRoute`, `unregisterRoute`, `registerFilter`, `unregisterFilter`, and `clear()`) throw
+  `IllegalStateException`. Query methods and route dispatch continue working.
 - **Unmatched requests skip admission.** A path or method that matches no route is answered 404 or 405
   before any filter runs, so rate limiting does not see them.
+
+## Tenant membership filter
+
+`TenantMembershipFilter` (`eu.exeris.caps.serviceboundarycore.api.TenantMembershipFilter`) is a public
+admission filter running in `AdmissionPhase.AUTHORIZATION` under the name `"tenant-membership"`. It verifies
+that the authenticated principal belongs to the tenant identified by a path parameter:
+
+```java
+registry.registerFilter(
+    TenantMembershipFilter.pathParameter("orgId")
+        .bypassingRoles(Set.of("platform-admin"))
+);
+```
+
+- **Path matching:** A route whose pattern does not contain `{parameterName}` passes through untouched.
+- **Authentication required:** If no principal was recorded on the request, the filter answers 401.
+- **Role bypass:** If the authenticated principal holds any role specified in `bypassingRoles`, the request
+  is admitted.
+- **Membership verification:** If the principal has no tenant, or if the path parameter value is not a
+  canonical lowercase UUID matching the principal's tenant UUID, the filter answers 403.
 
 ## Build & test
 

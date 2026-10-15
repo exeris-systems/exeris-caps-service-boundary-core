@@ -2,6 +2,7 @@ package eu.exeris.caps.serviceboundarycore.internal;
 
 import eu.exeris.caps.serviceboundarycore.api.AdmissionContext;
 import eu.exeris.caps.serviceboundarycore.api.RequestContext;
+import eu.exeris.caps.serviceboundarycore.api.TenantConflictException;
 import eu.exeris.kernel.spi.security.PrincipalContext;
 
 import java.util.LinkedHashMap;
@@ -85,6 +86,12 @@ public final class DefaultAdmissionContext implements AdmissionContext {
         requireOpen();
         if (this.principal != null) {
             throw new IllegalStateException("The request already has an authenticated principal");
+        }
+        if (this.tenantId != null && principal.tenantId().isPresent()) {
+            String principalTenant = principal.tenantId().get().toString();
+            if (!this.tenantId.equalsIgnoreCase(principalTenant)) {
+                throw new TenantConflictException();
+            }
         }
         this.principal = principal;
         this.sessionId = sessionId;

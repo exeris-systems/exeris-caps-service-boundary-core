@@ -17,15 +17,7 @@ Milestones are versions, not dates.
 
 ## Before 0.1.0
 
-Each item is a property that the Identity SKU relies on and that the code does not hold. Each has a tracking issue in the `0.1.0` milestone.
-
-### The principal's tenant replaces the host's tenant without comparison
-
-[#14](https://github.com/exeris-systems/exeris-caps-service-boundary-core/issues/14). `DefaultAdmissionContext.authenticate` sets the request's tenant from the principal when the principal carries one (`internal/DefaultAdmissionContext.java:91`, in `record`), overwriting a tenant the host had already bound (`:37`). A token for one tenant presented on a request the host resolved to another is therefore not refused here. The Identity SKU relies on host-bound tenant isolation, so the refusal belongs in `record`, and the rule for the conflict is to be written in the README.
-
-### The registry stays mutable after the boundary is ready
-
-[#15](https://github.com/exeris-systems/exeris-caps-service-boundary-core/issues/15). `registerRoute`, `registerFilter`, `unregisterFilter`, `unregisterRoute` and `clear()` work at any time, for any holder of an `ApiSurfaceRegistry` (`internal/DefaultApiSurfaceRegistry.java:61`, `:77`, `:83`, `:104`, `:199`). A capability can therefore remove the authentication filter of a running boundary, and `ServiceBoundaryCoreModule.ready()` does not freeze the registry (`ServiceBoundaryCoreModule.java:83`). The Identity SKU relies on a route surface that cannot change once ready.
+No item.
 
 ## Later
 
@@ -46,13 +38,14 @@ unanswered. The request is never served, so nothing is admitted by mistake, but 
 kernel completes an unanswered exchange has not been verified here. A default 500 after an unanswered `false`
 would make the contract independent of that.
 
-### A route without requirements is served anonymously
+### A route without requirements is served anonymously by default
 
 A route built with no requirements, or with `null`, declares nothing and is served to a request that no filter
-authenticated (`api/ApiSurfaceRoute.java`, constructor; README, "Route requirements are enforced"). This is the
-documented behaviour. A default of denial, with `RouteRequirement.permitAll()` as the explicit opt-out, would
-make a forgotten requirement fail closed, and it changes every consumer's routes, so it waits on a decision
-before any consumer depends on the current default.
+authenticated (`api/ApiSurfaceRoute.java`, constructor; README, "Route requirements are enforced"). A
+composition can already make a forgotten requirement fail closed: `ServiceBoundaryCoreModule.builder()
+.strictRoutes(true)` refuses such a route at registration, and `RouteRequirement.permitAll()` declares an
+anonymous one. Strict mode is opt-in. Making it the default changes every consumer's routes, so it waits on a
+decision before any consumer depends on the current default.
 
 ### Unmatched requests skip admission
 
