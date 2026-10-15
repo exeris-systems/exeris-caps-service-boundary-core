@@ -44,7 +44,7 @@ mvn compile -Dexeris.codegen.skip=true   # pass 1: seed processor metadata
 mvn verify                               # pass 2: generate manifest, validate DAG and Wall
 ```
 
-The upstreams are not on Maven Central. `exeris-sdk` v0.12.0 and `exeris-tooling` v0.9.0 are built from source at those tags, and `exeris-kernel` 0.13.0-SNAPSHOT is resolved from GitHub Packages, which needs a token with `read:packages`. [`.github/workflows/build.yml`](.github/workflows/build.yml) is the exact sequence, and [`.github/maven-settings.xml`](.github/maven-settings.xml) the repository configuration it uses.
+The upstreams are not on Maven Central. `exeris-sdk` v0.12.0 and `exeris-tooling` v0.10.0 are built from source at those tags, and `exeris-kernel` 0.13.0-SNAPSHOT is resolved from GitHub Packages, which needs a token with `read:packages`. [`.github/workflows/build.yml`](.github/workflows/build.yml) is the exact sequence, and [`.github/maven-settings.xml`](.github/maven-settings.xml) the repository configuration it uses.
 
 Single module test execution:
 ```bash
