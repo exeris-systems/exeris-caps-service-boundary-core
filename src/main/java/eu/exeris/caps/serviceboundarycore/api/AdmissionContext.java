@@ -27,9 +27,11 @@ public interface AdmissionContext {
      * Records the authenticated principal of this request, and its tenant when the principal carries one.
      *
      * <p>A request has at most one principal: a second call is refused, so a later filter cannot
-     * silently replace the identity an earlier one verified.
+     * silently replace the identity an earlier one verified. A principal whose tenant differs from a tenant
+     * the host already bound to the request is refused, and the registry answers {@code 403}.
      *
      * @param principal verified principal; non-null
+     * @throws TenantConflictException if the principal's tenant differs from the host-bound tenant
      * @throws IllegalStateException if a principal is already established or the context is sealed
      * @throws IllegalStateException if called from a thread other than the one running the request's filters
      */
@@ -40,10 +42,12 @@ public interface AdmissionContext {
      *
      * <p>The session id becomes {@link RequestContext#sessionId()} for later filters and the handler. It
      * is the only way a session id enters a request context. The same once-per-request rule as
-     * {@link #authenticate(PrincipalContext)} applies to the principal and the session id together.
+     * {@link #authenticate(PrincipalContext)} applies to the principal and the session id together, and so
+     * does the refusal of a principal whose tenant differs from the host-bound tenant.
      *
      * @param principal verified principal; non-null
      * @param sessionId identifier of the session the principal authenticated with; non-null
+     * @throws TenantConflictException if the principal's tenant differs from the host-bound tenant
      * @throws IllegalStateException if a principal is already established or the context is sealed
      * @throws IllegalStateException if called from a thread other than the one running the request's filters
      */

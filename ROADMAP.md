@@ -38,13 +38,14 @@ unanswered. The request is never served, so nothing is admitted by mistake, but 
 kernel completes an unanswered exchange has not been verified here. A default 500 after an unanswered `false`
 would make the contract independent of that.
 
-### A route without requirements is served anonymously
+### A route without requirements is served anonymously by default
 
 A route built with no requirements, or with `null`, declares nothing and is served to a request that no filter
-authenticated (`api/ApiSurfaceRoute.java`, constructor; README, "Route requirements are enforced"). This is the
-documented behaviour. A default of denial, with `RouteRequirement.permitAll()` as the explicit opt-out, would
-make a forgotten requirement fail closed, and it changes every consumer's routes, so it waits on a decision
-before any consumer depends on the current default.
+authenticated (`api/ApiSurfaceRoute.java`, constructor; README, "Route requirements are enforced"). A
+composition can already make a forgotten requirement fail closed: `ServiceBoundaryCoreModule.builder()
+.strictRoutes(true)` refuses such a route at registration, and `RouteRequirement.permitAll()` declares an
+anonymous one. Strict mode is opt-in. Making it the default changes every consumer's routes, so it waits on a
+decision before any consumer depends on the current default.
 
 ### Unmatched requests skip admission
 
