@@ -5,7 +5,7 @@ visibility: public
 owning-repo: exeris-caps-service-boundary-core
 status: active
 last-verified: 2026-10-15
-# `exeris-caps-service-boundary-core` — Roadmap
+---
 
 # exeris-caps-service-boundary-core — Roadmap
 
@@ -17,11 +17,15 @@ Milestones are versions, not dates.
 
 ## Before 0.1.0
 
-No item. Every property that the README states about admission (principal, tenant and session bound only
-through admission, route requirements enforced, filter and route uniqueness, unmatched requests skipping
-admission) is met by `DefaultApiSurfaceRegistry`, `DefaultAdmissionContext` and `DefaultRequestContext`. The
-gaps below are design questions, scaling, or behaviour outside the documented contract, so none of them blocks
-the first release.
+Each item is a property that the Identity SKU relies on and that the code does not hold. Each has a tracking issue in the `0.1.0` milestone.
+
+### The principal's tenant replaces the host's tenant without comparison
+
+[#14](https://github.com/exeris-systems/exeris-caps-service-boundary-core/issues/14). `DefaultAdmissionContext.authenticate` sets the request's tenant from the principal when the principal carries one (`internal/DefaultAdmissionContext.java:91`, in `record`), overwriting a tenant the host had already bound (`:37`). A token for one tenant presented on a request the host resolved to another is therefore not refused here. The Identity SKU relies on host-bound tenant isolation, so the refusal belongs in `record`, and the rule for the conflict is to be written in the README.
+
+### The registry stays mutable after the boundary is ready
+
+[#15](https://github.com/exeris-systems/exeris-caps-service-boundary-core/issues/15). `registerRoute`, `registerFilter`, `unregisterFilter`, `unregisterRoute` and `clear()` work at any time, for any holder of an `ApiSurfaceRegistry` (`internal/DefaultApiSurfaceRegistry.java:61`, `:77`, `:83`, `:104`, `:199`). A capability can therefore remove the authentication filter of a running boundary, and `ServiceBoundaryCoreModule.ready()` does not freeze the registry (`ServiceBoundaryCoreModule.java:83`). The Identity SKU relies on a route surface that cannot change once ready.
 
 ## Later
 
@@ -41,22 +45,6 @@ either. A filter that throws an `Exception` is answered 500, but an `Error` prop
 unanswered. The request is never served, so nothing is admitted by mistake, but the caller waits. Whether the
 kernel completes an unanswered exchange has not been verified here. A default 500 after an unanswered `false`
 would make the contract independent of that.
-
-### The principal's tenant replaces the host's tenant without comparison
-
-`DefaultAdmissionContext.authenticate` sets the request's tenant from the principal when the principal carries
-one (`internal/DefaultAdmissionContext.java`, `record`), overwriting a tenant the host had already bound. A
-token for one tenant presented on a request the host resolved to another is therefore not refused here. The
-rule for a conflict between a host-resolved tenant and a principal's tenant is not written down; it waits on an
-ADR-012 or ADR-099 decision, after which the refusal belongs in `record`.
-
-### The registry stays mutable after the boundary is ready
-
-`registerRoute`, `registerFilter`, `unregisterFilter`, `unregisterRoute` and `clear()` work at any time, for any
-holder of an `ApiSurfaceRegistry` (`internal/DefaultApiSurfaceRegistry.java`). A capability can therefore remove
-the authentication filter of a running boundary. `ServiceBoundaryCoreModule.ready()` does not freeze the
-registry (`ServiceBoundaryCoreModule.java`). Whether to freeze at `ready()`, or to restrict removal to the
-registrant, is a design question for the composition lifecycle.
 
 ### A route without requirements is served anonymously
 
