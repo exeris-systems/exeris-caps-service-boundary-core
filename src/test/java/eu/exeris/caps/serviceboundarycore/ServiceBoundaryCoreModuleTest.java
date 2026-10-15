@@ -1,6 +1,15 @@
 package eu.exeris.caps.serviceboundarycore;
 
+import eu.exeris.caps.serviceboundarycore.api.AdmissionFilter;
+import eu.exeris.caps.serviceboundarycore.api.AdmissionPhase;
+import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRegistry;
+import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRoute;
 import eu.exeris.caps.serviceboundarycore.api.BoundaryServiceHook;
+import eu.exeris.caps.serviceboundarycore.api.RouteMatch;
+import eu.exeris.kernel.spi.http.HttpExchange;
+import eu.exeris.kernel.spi.http.HttpMethod;
+import eu.exeris.kernel.spi.http.HttpStatus;
+import eu.exeris.kernel.spi.http.RouteRequirement;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -155,5 +164,113 @@ class ServiceBoundaryCoreModuleTest {
         boolean removed = module.serviceLifecycleHooks().unregisterHook(hook);
         assertThat(removed).isTrue();
         assertThat(module.serviceLifecycleHooks().registeredHooks()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("registry mutation after ready throws for each mutator")
+    void registryMutationAfterReadyThrows() throws Exception {
+        ServiceBoundaryCoreModule module = new ServiceBoundaryCoreModule();
+        ApiSurfaceRegistry registry = module.apiSurfaceRegistry();
+
+        ApiSurfaceRoute existingRoute = ApiSurfaceRoute.builder()
+                .method(HttpMethod.GET)
+                .pathPattern("/existing")
+                .actionName("Exist#get")
+                .handler(ex -> ex.respond(HttpStatus.OK))
+                .build();
+        registry.registerRoute(existingRoute);
+
+        AdmissionFilter existingFilter = new AdmissionFilter() {
+            @Override public String name() { return "existing-filter"; }
+            @Override public AdmissionPhase phase() { return AdmissionPhase.PRE_ADMISSION; }
+            @Override public boolean filter(HttpExchange ex, RouteMatch rm) { return true; }
+        };
+        registry.registerFilter(existingFilter);
+
+        module.ready();
+
+        ApiSurfaceRoute newRoute = ApiSurfaceRoute.builder()
+                .method(HttpMethod.GET)
+                .pathPattern("/new")
+                .actionName("New#get")
+                .handler(ex -> ex.respond(HttpStatus.OK))
+                .build();
+
+        AdmissionFilter newFilter = new AdmissionFilter() {
+            @Override public String name() { return "new-filter"; }
+            @Override public AdmissionPhase phase() { return AdmissionPhase.PRE_ADMISSION; }
+            @Override public boolean filter(HttpExchange ex, RouteMatch rm) { return true; }
+        };
+
+        // 1. registerRoute throws
+        assertThatThrownBy(() -> registry.registerRoute(newRoute))
+                .isInstanceOf(IllegalStateException.class);
+
+        // 2. unregisterRoute throws
+        assertThatThrownBy(() -> registry.unregisterRoute(existingRoute))
+                .isInstanceOf(IllegalStateException.class);
+
+        // 3. registerFilter throws
+        assertThatThrownBy(() -> registry.registerFilter(newFilter))
+                .isInstanceOf(IllegalStateException.class);
+
+        // 4. unregisterFilter throws
+        assertThatThrownBy(() -> registry.unregisterFilter(existingFilter))
+                .isInstanceOf(IllegalStateException.class);
+
+        // 5. clear throws
+        assertThatThrownBy(registry::clear)
+                .isInstanceOf(IllegalStateException.class);
+
+        // Reads continue to work
+        assertThat(registry.routeCount()).isEqualTo(1);
+        assertThat(registry.routes()).containsExactly(existingRoute);
+        assertThat(registry.filters()).containsExactly(existingFilter);
+        assertThat(registry.matchRoute(HttpMethod.GET, "/existing")).isPresent();
+    }
+
+    @Test
+    @DisplayName("strict mode refuses an empty-requirement route and accepts permitAll")
+    void strictModeRouteRequirements() {
+        ServiceBoundaryCoreModule strictModule = ServiceBoundaryCoreModule.builder()
+                .strictRoutes(true)
+                .build();
+        assertThat(strictModule.isStrictRoutes()).isTrue();
+        ApiSurfaceRegistry strictRegistry = strictModule.apiSurfaceRegistry();
+
+        ApiSurfaceRoute emptyReqRoute = ApiSurfaceRoute.builder()
+                .method(HttpMethod.GET)
+                .pathPattern("/empty-req")
+                .actionName("Empty#get")
+                .handler(ex -> ex.respond(HttpStatus.OK))
+                .build();
+
+        // Strict mode refuses empty requirements
+        assertThatThrownBy(() -> strictRegistry.registerRoute(emptyReqRoute))
+                .isInstanceOf(IllegalStateException.class);
+
+        // Strict mode accepts permitAll via kernel RouteRequirement.permitAll()
+        ApiSurfaceRoute kernelPermitAllRoute = ApiSurfaceRoute.builder()
+                .method(HttpMethod.GET)
+                .pathPattern("/kernel-permit-all")
+                .actionName("KernelPermit#get")
+                .requirements(List.of(RouteRequirement.permitAll()))
+                .handler(ex -> ex.respond(HttpStatus.OK))
+                .build();
+        strictRegistry.registerRoute(kernelPermitAllRoute);
+        assertThat(strictRegistry.routeCount()).isEqualTo(1);
+
+        // Non-strict mode accepts empty requirements
+        ServiceBoundaryCoreModule nonStrictModule = new ServiceBoundaryCoreModule();
+        assertThat(nonStrictModule.isStrictRoutes()).isFalse();
+        nonStrictModule.apiSurfaceRegistry().registerRoute(emptyReqRoute);
+        assertThat(nonStrictModule.apiSurfaceRegistry().routeCount()).isEqualTo(1);
+
+        // Builder refuses custom registry with strictRoutes
+        assertThatThrownBy(() -> ServiceBoundaryCoreModule.builder()
+                .registry(strictRegistry)
+                .strictRoutes(true)
+                .build())
+                .isInstanceOf(IllegalStateException.class);
     }
 }
