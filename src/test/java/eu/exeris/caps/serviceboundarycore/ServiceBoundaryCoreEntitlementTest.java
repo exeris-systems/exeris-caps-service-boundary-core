@@ -1,5 +1,6 @@
 package eu.exeris.caps.serviceboundarycore;
 
+import eu.exeris.kernel.spi.contract.EntitlementClass;
 import eu.exeris.kernel.spi.contract.EntitlementRequirement;
 import eu.exeris.kernel.tck.contract.AbstractEntitlementRequirementTck;
 import org.junit.jupiter.api.DisplayName;
@@ -34,5 +35,16 @@ class ServiceBoundaryCoreEntitlementTest extends AbstractEntitlementRequirementT
     void requiresOnlyItsOwnCapability() {
         assertThat(new ServiceBoundaryCoreEntitlement().requiredCapabilities()).containsExactly("exeris-caps-service-boundary-core");
         assertThat(ServiceBoundaryCoreEntitlement.CAPABILITY_ID).isEqualTo("exeris-caps-service-boundary-core");
+    }
+
+    @Test
+    @DisplayName("It declares the COMMERCIAL entitlement class, stable across calls")
+    void entitlementClassIsCommercialAndStable() {
+        ServiceBoundaryCoreEntitlement entitlement = new ServiceBoundaryCoreEntitlement();
+        EntitlementClass first = entitlement.entitlementClass();
+
+        assertThat(first).isEqualTo(EntitlementClass.COMMERCIAL);
+        assertThat(entitlement.entitlementClass()).isSameAs(first);
+        assertThat(new ServiceBoundaryCoreEntitlement().entitlementClass()).isEqualTo(EntitlementClass.COMMERCIAL);
     }
 }

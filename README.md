@@ -2,7 +2,7 @@
 
 Substrate aggregate capability for the Service Boundary family (IDP, PIM, OMS, Headless CMS API). Provides the foundational API surface registry, service lifecycle hooks, and request context execution pipeline on top of the Exeris kernel SPIs. Runs kernel-direct with zero Spring, Netty, or servlet dependencies.
 
-Status: proof of concept, built against `exeris-kernel` 0.13.0-SNAPSHOT. The API is not stable and no artefact has been published.
+Status: proof of concept, built against `exeris-kernel` 0.13.0. The API is not stable and no artefact has been published.
 
 ## Where it sits
 
@@ -74,7 +74,7 @@ mvn compile -Dexeris.codegen.skip=true   # pass 1: seed processor metadata
 mvn verify                               # pass 2: generate manifest, validate DAG and Wall
 ```
 
-`exeris-sdk` 0.12.0 and `exeris-tooling` 0.10.0 resolve from Maven Central, and `exeris-kernel` 0.13.0-SNAPSHOT is resolved from GitHub Packages, which needs a token with `read:packages`. [`.github/workflows/build.yml`](.github/workflows/build.yml) is the exact sequence, and [`.github/maven-settings.xml`](.github/maven-settings.xml) the repository configuration it uses.
+`exeris-sdk` 0.12.0, `exeris-kernel` 0.13.0 and `exeris-tooling` 0.10.0 resolve from Maven Central. [`.github/workflows/build.yml`](.github/workflows/build.yml) is the exact sequence, and [`.github/maven-settings.xml`](.github/maven-settings.xml) the repository configuration it uses.
 
 Single module test execution:
 ```bash

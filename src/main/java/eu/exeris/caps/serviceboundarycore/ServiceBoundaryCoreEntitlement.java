@@ -1,5 +1,6 @@
 package eu.exeris.caps.serviceboundarycore;
 
+import eu.exeris.kernel.spi.contract.EntitlementClass;
 import eu.exeris.kernel.spi.contract.EntitlementRequirement;
 
 import java.util.Set;
@@ -32,5 +33,19 @@ public final class ServiceBoundaryCoreEntitlement implements EntitlementRequirem
     @Override
     public Set<String> requiredCapabilities() {
         return REQUIRED;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Returns {@link EntitlementClass#COMMERCIAL} on every invocation. The return value is invariant,
+     * non-null, and stable across calls as required by the {@link EntitlementRequirement} contract.
+     * The capability is {@code commercial} under ADR-023.
+     *
+     * @return {@link EntitlementClass#COMMERCIAL}
+     */
+    @Override
+    public EntitlementClass entitlementClass() {
+        return EntitlementClass.COMMERCIAL;
     }
 }
