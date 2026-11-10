@@ -8,7 +8,7 @@ Status: proof of concept, built against `exeris-kernel` 0.13.1. The API is not s
 
 - **Layer:** Tier 2 — Layer 1 Substrate Aggregate per `high-level-architecture.md` §3.2.
 - **Substrate dependency:** Sits directly on `exeris-kernel-spi` (HTTP, Security, Context).
-- **Consuming capabilities:** specified as the base for the Service Boundary platform capabilities (Layer 4) and domain primitives (Layer 5). Of the caps that exist today, `exeris-caps-audit-trail`, `exeris-caps-federated-login` and `exeris-caps-token-issuer` depend on it.
+- **Consuming capabilities:** specified as the base for the Service Boundary platform capabilities (Layer 4) and domain primitives (Layer 5). Of the caps that exist today, `exeris-caps-audit-trail`, `exeris-caps-gateway-core`, `exeris-caps-jwt-validation`, `exeris-caps-rate-limiting` and `exeris-caps-token-issuer` depend on it.
 - **Wall boundary (ADR-006 / ADR-055):** Crosses no Spring, Netty, or servlet boundaries; exposes only `eu.exeris.caps.serviceboundarycore.api.*` across capabilities.
 
 ## Request admission
@@ -74,7 +74,7 @@ mvn compile -Dexeris.codegen.skip=true   # pass 1: seed processor metadata
 mvn verify                               # pass 2: generate manifest, validate DAG and Wall
 ```
 
-`exeris-sdk` 0.13.3, `exeris-kernel` 0.13.1 and `exeris-tooling` 0.11.0 resolve from Maven Central. [`.github/workflows/build.yml`](.github/workflows/build.yml) is the exact sequence, and [`.github/maven-settings.xml`](.github/maven-settings.xml) the repository configuration it uses.
+`exeris-sdk` 0.13.3, `exeris-kernel` 0.13.1 and `exeris-tooling` 0.11.0 resolve from Maven Central. No token or settings file is needed. [`.github/workflows/build.yml`](.github/workflows/build.yml) is the exact sequence.
 
 Single module test execution:
 ```bash
