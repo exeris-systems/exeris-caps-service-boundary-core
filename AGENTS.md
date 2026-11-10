@@ -21,7 +21,7 @@ It provides four services to higher-layer capabilities:
 - `RequestContext` (`eu.exeris.caps.serviceboundarycore.api.RequestContext`): Request-scoped context carrying tenant identity, security principal, trace ID, and attributes via Java `ScopedValue`.
 - `RequestFilterChain` (`eu.exeris.caps.serviceboundarycore.api.RequestFilterChain`): Admission filters run between route match and handler.
 
-License: `commercial` (Exeris Commercial License 1.1, source-available, public visibility per ADR-023). Proof of concept, built against `exeris-kernel` 0.13.0-SNAPSHOT.
+License: `commercial` (Exeris Commercial License 1.1, source-available, public visibility per ADR-023). Proof of concept, built against `exeris-kernel` 0.13.1.
 
 ## 2. Operating contract & non-negotiable boundaries
 
