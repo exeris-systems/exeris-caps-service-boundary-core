@@ -5,23 +5,14 @@ name: release
 #
 # WHAT EACH TRIGGER CAN DO
 #
-#   tag push                 A rehearsal, fixed: `version` is empty (the reusable workflow takes the
-#                            version from the tag and refuses a tag that is not vMAJOR.MINOR.PATCH or
-#                            is not on the default branch), `upload` is false and `target` is `none`.
-#                            Only the build job runs: a throwaway signing key, every gate, a run
-#                            artifact. The `publish` job, the only reader of the secrets passed
-#                            below, is skipped, and so is attestation. Nothing leaves the runner.
-#   dispatch, any branch     A dry run of the same build at the version typed. An upload requested
-#                            from a branch other than the default is refused.
-#   dispatch, default branch The one path that can upload: it does so when a person selects a target
-#                            other than `none` and sets `upload`. The secrets are then read by
-#                            `publish`, and a Central deployment is left for a person to publish.
-#   dispatch, on a tag ref   Follows the tag rules above, including the containment check, and an
-#                            upload requested there is allowed; the version typed must equal the tag.
+#   tag push    A rehearsal: the reusable workflow takes the version from the tag and refuses a tag
+#               that is not vMAJOR.MINOR.PATCH or is not on the default branch.
+#   dispatch    A rehearsal of the same build at the version typed, from any branch.
 #
-# A tag cannot be made to upload without editing this file: publishing a tag is a decision made
-# here, in review, by replacing the two expressions below with the target the capability's licence
-# calls for (`central` or `github-packages`) and `true`.
+# Both run the build job only: a throwaway signing key, every gate, a run artifact. `upload` and
+# `target` are fixed below and no secret is passed, so the job that uploads cannot run and nothing
+# leaves the runner. Publishing is a change to this file, made in review: it sets the target the
+# capability's licence calls for (`central` or `github-packages`) and passes the release secrets.
 #
 # The permissions are the union of the jobs the reusable workflow declares; GitHub rejects a caller
 # that grants less. The job that holds the secrets cannot write provenance, and the job that writes
@@ -38,17 +29,6 @@ on:
         description: 'Version to build for a DRY RUN (e.g. 0.1.0), MAJOR.MINOR.PATCH, never -SNAPSHOT'
         required: true
         type: string
-      upload:
-        description: 'Upload what was built. Takes effect only with a target other than none, and only from the default branch.'
-        required: true
-        type: boolean
-        default: false
-      target:
-        description: 'Where an upload goes'
-        required: true
-        type: choice
-        options: [none, central, github-packages]
-        default: none
 
 permissions:
   contents: read
@@ -61,10 +41,7 @@ jobs:
     uses: exeris-systems/.github/.github/workflows/caps-release.yml@main
     with:
       version: ${{ inputs.version }}
-      upload: ${{ inputs.upload || false }}
-      target: ${{ inputs.target || 'none' }}
-    secrets:
-      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-      CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
-      CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+      # Fixed, not inputs: this repository can only rehearse a release. Uploading needs a change to
+      # this file that sets a target and passes the release secrets, which is reviewed like any other.
+      upload: false
+      target: none
