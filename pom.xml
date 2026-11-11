@@ -34,6 +34,22 @@
         </license>
     </licenses>
 
+    <developers>
+        <developer>
+            <id>arkstack-dev</id>
+            <name>Arkadiusz Przychocki</name>
+            <email>oss@exeris.eu</email>
+            <organization>Exeris Systems</organization>
+            <organizationUrl>https://exeris.eu</organizationUrl>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/exeris-systems/exeris-caps-service-boundary-core.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/exeris-systems/exeris-caps-service-boundary-core.git</developerConnection>
+        <url>https://github.com/exeris-systems/exeris-caps-service-boundary-core</url>
+    </scm>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
@@ -146,5 +162,124 @@
             </plugin>
         </plugins>
     </build>
+
+    <!--
+        Everything a release needs, and NOTHING the ordinary build touches. Activated only by
+        `-P release`.
+
+        The isolation is not tidiness. central-publishing-maven-plugin declares
+        <extensions>true</extensions>, which makes it TAKE OVER the `deploy` phase. Declared outside
+        this profile it would own every `mvn deploy` this module runs, and the takeover is silent.
+
+        Sources and javadoc jars are attached here rather than in the main build because only a
+        release needs them, and a javadoc run is the slowest step of a build nobody publishes.
+        Central refuses a coordinate that lacks either, and so does the release workflow's
+        readiness gate.
+
+        The plugins are the ones the SDK and the kernel publish with, at the same versions, so one
+        release path serves all of them.
+    -->
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.3.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.12.0</version>
+                        <configuration>
+                            <!-- The JDK's own @apiNote, @implSpec and @implNote tags are not
+                                 registered for user code, and javadoc rejects an unregistered tag
+                                 as an error. They are registered here, with the headings the JDK's
+                                 own documentation gives them, rather than rewritten out of the
+                                 doc comments that use them. -->
+                            <tags>
+                                <tag>
+                                    <name>apiNote</name>
+                                    <placement>a</placement>
+                                    <head>API Note:</head>
+                                </tag>
+                                <tag>
+                                    <name>implSpec</name>
+                                    <placement>a</placement>
+                                    <head>Implementation Requirements:</head>
+                                </tag>
+                                <tag>
+                                    <name>implNote</name>
+                                    <placement>a</placement>
+                                    <head>Implementation Note:</head>
+                                </tag>
+                            </tags>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!--
+                        Central verifies a detached GPG signature on every file it accepts: jar,
+                        sources, javadoc and pom. The passphrase arrives in the environment
+                        variable MAVEN_GPG_PASSPHRASE, which is the plugin's default name, so no
+                        passphrase or key id is configured here. `-Dgpg.skip=true` is the only way
+                        to build this profile without a key.
+                    -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.8</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!--
+                        autoPublish=false: an upload becomes a deployment that a person still has
+                        to Publish in the portal, and an unpublished deployment can be dropped
+                        where a published one cannot be touched. waitUntil=validated makes the
+                        build block until Central has validated, so a missing sources jar, javadoc
+                        jar or signature fails the build instead of sitting in the portal.
+                        skipUpload builds the bundle without sending it.
+                    -->
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.12.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>false</autoPublish>
+                            <waitUntil>validated</waitUntil>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>

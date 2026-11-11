@@ -1,0 +1,57 @@
+name: release
+
+# A tag is the release candidate and a dispatch is the dry run; both call the organisation's
+# reusable workflow, which holds the steps and says what each one holds and why.
+#
+# NOTHING IS UPLOADED BY DEFAULT. `upload` is false and `target` is `none` unless a dispatch sets
+# them, and a tag takes the defaults: it builds, signs with a throwaway key, runs every gate and
+# keeps the result as a run artifact, with no secret. Publishing a tag is a decision made here, in
+# review: replace the two expressions below with the target the capability's licence calls for
+# (`central` or `github-packages`) and `true`. Until then an upload happens only from a dispatch on
+# the default branch that asks for one.
+#
+# The permissions are the union of the jobs the reusable workflow declares; GitHub rejects a caller
+# that grants less. The job that holds the secrets cannot write provenance, and the job that writes
+# provenance runs no project code.
+
+on:
+  push:
+    tags:
+      # Permissive on purpose: the strict check is a step in the reusable workflow, not this filter.
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build for a DRY RUN (e.g. 0.1.0), MAJOR.MINOR.PATCH, never -SNAPSHOT'
+        required: true
+        type: string
+      upload:
+        description: 'Upload what was built. Takes effect only with a target other than none, and only from the default branch.'
+        required: true
+        type: boolean
+        default: false
+      target:
+        description: 'Where an upload goes'
+        required: true
+        type: choice
+        options: [none, central, github-packages]
+        default: none
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    uses: exeris-systems/.github/.github/workflows/caps-release.yml@main
+    with:
+      version: ${{ inputs.version }}
+      upload: ${{ inputs.upload || false }}
+      target: ${{ inputs.target || 'none' }}
+    secrets:
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+      CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+      CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
