@@ -37,10 +37,17 @@ the handler has no `AdmissionContext` and cannot change it.
 - **Strict routes mode.** When enabled on `ServiceBoundaryCoreModule` (via `ServiceBoundaryCoreModule.builder().strictRoutes(true).build()`),
   `registerRoute` refuses routes with an empty requirement list by throwing `IllegalStateException`. Routes
   explicitly declared anonymous must use `RouteRequirement.permitAll()`. Non-strict mode preserves the default behaviour.
-- **Frozen registry.** `ServiceBoundaryCoreModule.ready()` freezes the `ApiSurfaceRegistry` (a custom
-  `ApiSurfaceRegistry` implementation is responsible for its own freezing). Once frozen, all mutators
+- **Registry phases.** The default registry moves one way: open, frozen, teardown.
+  `ServiceBoundaryCoreModule.ready()` freezes it; while frozen the service is serving and all mutators
   (`registerRoute`, `unregisterRoute`, `registerFilter`, `unregisterFilter`, and `clear()`) throw
-  `IllegalStateException`. Query methods and route dispatch continue working.
+  `IllegalStateException`. Query methods and route dispatch continue working. A custom `ApiSurfaceRegistry`
+  implementation is responsible for its own phases.
+- **Teardown.** `ServiceBoundaryCoreModule.beginTeardown()` ends serving: the registry answers every request 503
+  (including paths that match no route), removal is permitted so capabilities can detach in their `terminate()`,
+  and addition stays refused. `drain(Duration)` and `terminate()` call it first, so a composition that drains the
+  boundary before terminating any capability needs to do nothing more. A composition that terminates capabilities
+  without draining the boundary, or terminates the boundary after them, calls `beginTeardown()` before
+  terminating the first of them. Teardown is one-way: `ready()` after it throws.
 - **Unmatched requests skip admission.** A path or method that matches no route is answered 404 or 405
   before any filter runs, so rate limiting does not see them.
 

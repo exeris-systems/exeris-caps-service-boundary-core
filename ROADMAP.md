@@ -21,6 +21,14 @@ No item.
 
 ## Later
 
+### A composition that skips the boundary's drain leaves attached filters in place
+
+Teardown begins in the boundary's `drain` or `terminate`. A composition that terminates a capability while the
+registry is still frozen, because it skipped the boundary's drain (for instance when its drain budget is spent)
+and has not called `beginTeardown()`, sees that capability's `unregisterFilter` throw; the filter stays
+registered and keeps being enforced, and the boundary's own `terminate()` ends serving with 503. Closing this
+needs either a pre-terminate step in the composition runtime or removal after freeze implying teardown.
+
 ### Admission outside `handle()` enforces no route requirements
 
 `RequestFilterChain.execute(exchange, routeMatch)` runs the filters, but it checks no `RouteRequirement` of the
