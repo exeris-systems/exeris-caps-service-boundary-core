@@ -3,12 +3,25 @@ name: release
 # A tag is the release candidate and a dispatch is the dry run; both call the organisation's
 # reusable workflow, which holds the steps and says what each one holds and why.
 #
-# NOTHING IS UPLOADED BY DEFAULT. `upload` is false and `target` is `none` unless a dispatch sets
-# them, and a tag takes the defaults: it builds, signs with a throwaway key, runs every gate and
-# keeps the result as a run artifact, with no secret. Publishing a tag is a decision made here, in
-# review: replace the two expressions below with the target the capability's licence calls for
-# (`central` or `github-packages`) and `true`. Until then an upload happens only from a dispatch on
-# the default branch that asks for one.
+# WHAT EACH TRIGGER CAN DO
+#
+#   tag push                 A rehearsal, fixed: `version` is empty (the reusable workflow takes the
+#                            version from the tag and refuses a tag that is not vMAJOR.MINOR.PATCH or
+#                            is not on the default branch), `upload` is false and `target` is `none`.
+#                            Only the build job runs: a throwaway signing key, every gate, a run
+#                            artifact. The `publish` job, the only reader of the secrets passed
+#                            below, is skipped, and so is attestation. Nothing leaves the runner.
+#   dispatch, any branch     A dry run of the same build at the version typed. An upload requested
+#                            from a branch other than the default is refused.
+#   dispatch, default branch The one path that can upload: it does so when a person selects a target
+#                            other than `none` and sets `upload`. The secrets are then read by
+#                            `publish`, and a Central deployment is left for a person to publish.
+#   dispatch, on a tag ref   Follows the tag rules above, including the containment check, and an
+#                            upload requested there is allowed; the version typed must equal the tag.
+#
+# A tag cannot be made to upload without editing this file: publishing a tag is a decision made
+# here, in review, by replacing the two expressions below with the target the capability's licence
+# calls for (`central` or `github-packages`) and `true`.
 #
 # The permissions are the union of the jobs the reusable workflow declares; GitHub rejects a caller
 # that grants less. The job that holds the secrets cannot write provenance, and the job that writes
