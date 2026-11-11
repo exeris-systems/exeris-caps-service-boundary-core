@@ -28,6 +28,9 @@ import java.util.Objects;
  * <p>Annotated with {@code @CapabilityLifecycle} and implements {@link CapabilityLifecycleHooks}
  * to coordinate the boundary lifecycle with the composition runtime.
  *
+ * <p>{@link #ready()} freezes the default registry; {@link #beginTeardown()} (also entered by
+ * {@link #drain(Duration)} and {@link #terminate()}) ends serving and lets capabilities detach.
+ *
  * @since 0.1.0
  */
 @CapabilityModule
@@ -105,13 +108,29 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
         lifecycleHooks.onServiceReady();
     }
 
+    /**
+     * Ends serving: from now on the default registry answers every request 503, refuses every addition and
+     * permits removal, so capabilities that attached a filter or route can detach. One-way, idempotent, never
+     * throws; a registry supplied to the constructor is responsible for its own phases and is not touched.
+     *
+     * <p>{@link #drain(Duration)} and {@link #terminate()} call it first. A composition that terminates
+     * capabilities before this module has drained or terminated calls it before terminating any of them.
+     */
+    public void beginTeardown() {
+        if (registry instanceof DefaultApiSurfaceRegistry r) {
+            r.beginTeardown();
+        }
+    }
+
     @Override
     public void drain(Duration remaining) throws Exception {
+        beginTeardown();
         lifecycleHooks.onServiceDrain(remaining);
     }
 
     @Override
     public void terminate() {
+        beginTeardown();
         lifecycleHooks.onServiceTerminate();
     }
 

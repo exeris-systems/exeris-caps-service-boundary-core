@@ -40,6 +40,17 @@ import java.util.regex.Pattern;
  * <p>After the filters, the route's {@link RouteRequirement}s are enforced against the admitted principal
  * before the handler runs; a request that does not satisfy them is answered 401 or 403.
  *
+ * <p>The registry moves one way through three phases: {@code OPEN}, {@code FROZEN}, {@code TEARDOWN}
+ * ({@code OPEN} may go straight to {@code TEARDOWN}). While {@code OPEN} routes and filters may be added and
+ * removed. While {@code FROZEN} the service is serving and nothing may be added, replaced or removed. In
+ * {@code TEARDOWN} serving has ended: every request is answered 503, removal is permitted so that capabilities
+ * can detach, and addition stays refused. Every mutator and every phase transition runs under one lock, so a
+ * mutation either happens before a transition or observes it; the request path never takes that lock.
+ *
+ * <p>A request reads the filter snapshot before it reads the phase, and a removal is permitted only after the
+ * {@code TEARDOWN} write it observed under the lock. A request that does not observe {@code TEARDOWN} therefore
+ * read its snapshot before any removal, and runs every filter that was registered when serving ended.
+ *
  * @since 0.1.0
  */
 public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, RequestFilterChain {
@@ -55,7 +66,10 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     private final List<ApiSurfaceRoute> routeList = new CopyOnWriteArrayList<>();
     private final List<AdmissionFilter> filterList = new CopyOnWriteArrayList<>();
     private volatile boolean strictRoutes;
-    private volatile boolean frozen;
+    private final Object mutationLock = new Object();
+    private volatile Phase phase = Phase.OPEN;
+
+    private enum Phase { OPEN, FROZEN, TEARDOWN }
 
     public DefaultApiSurfaceRegistry() {
         this(false);
@@ -65,20 +79,53 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         this.strictRoutes = strictRoutes;
     }
 
+    /**
+     * Ends the open phase: from now on nothing can be added, replaced or removed until teardown. Idempotent.
+     *
+     * @throws IllegalStateException when the registry is already being torn down
+     */
     public void freeze() {
-        this.frozen = true;
+        synchronized (mutationLock) {
+            if (phase == Phase.TEARDOWN) {
+                throw new IllegalStateException("The registry is being torn down and cannot be made ready");
+            }
+            phase = Phase.FROZEN;
+        }
     }
 
+    /** Ends serving: requests are refused, removal is permitted, addition stays refused. One-way, idempotent. */
+    public void beginTeardown() {
+        synchronized (mutationLock) {
+            phase = Phase.TEARDOWN;
+        }
+    }
+
+    /** Whether the registry admits no addition (frozen or being torn down). */
     public boolean isFrozen() {
-        return frozen;
+        return phase != Phase.OPEN;
+    }
+
+    /** Whether serving has ended and removal is permitted. */
+    public boolean isTearingDown() {
+        return phase == Phase.TEARDOWN;
     }
 
     public boolean isStrictRoutes() {
         return strictRoutes;
     }
 
-    private void checkNotFrozen() {
-        if (frozen) {
+    /** Must be called holding {@code mutationLock}. */
+    private void checkAdditionAllowed() {
+        switch (phase) {
+            case OPEN -> { }
+            case FROZEN -> throw new IllegalStateException("The registry is frozen and can no longer be modified");
+            case TEARDOWN -> throw new IllegalStateException("The registry is being torn down and admits no addition");
+        }
+    }
+
+    /** Must be called holding {@code mutationLock}. */
+    private void checkRemovalAllowed() {
+        if (phase == Phase.FROZEN) {
             throw new IllegalStateException("The registry is frozen and can no longer be modified");
         }
     }
@@ -86,12 +133,12 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     @Override
     public void registerRoute(ApiSurfaceRoute route) {
         Objects.requireNonNull(route, "route");
-        checkNotFrozen();
-        if (strictRoutes && route.requirements().isEmpty()) {
-            throw new IllegalStateException("Strict route mode: route " + route.method() + " "
-                    + route.pathPattern() + " declared no requirements");
-        }
-        synchronized (routeList) {
+        synchronized (mutationLock) {
+            checkAdditionAllowed();
+            if (strictRoutes && route.requirements().isEmpty()) {
+                throw new IllegalStateException("Strict route mode: route " + route.method() + " "
+                        + route.pathPattern() + " declared no requirements");
+            }
             for (ApiSurfaceRoute existing : routeList) {
                 if (existing.method() == route.method()
                         && shape(existing.pathPattern()).equals(shape(route.pathPattern()))) {
@@ -107,14 +154,15 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     @Override
     public boolean unregisterRoute(ApiSurfaceRoute route) {
         Objects.requireNonNull(route, "route");
-        checkNotFrozen();
-        return routeList.removeIf(existing -> existing.equals(route) && existing.handler() == route.handler());
+        synchronized (mutationLock) {
+            checkRemovalAllowed();
+            return routeList.removeIf(existing -> existing.equals(route) && existing.handler() == route.handler());
+        }
     }
 
     @Override
     public void registerFilter(AdmissionFilter filter) {
         Objects.requireNonNull(filter, "filter");
-        checkNotFrozen();
         String name = filter.name();
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("An admission filter needs a non-blank name");
@@ -122,7 +170,8 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         if (filter.phase() == null) {
             throw new IllegalArgumentException("Admission filter " + name + " needs a phase");
         }
-        synchronized (filterList) {
+        synchronized (mutationLock) {
+            checkAdditionAllowed();
             for (AdmissionFilter existing : filterList) {
                 if (name.equals(existing.name())) {
                     throw new IllegalStateException("An admission filter named " + name + " is already registered");
@@ -136,8 +185,10 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     @Override
     public boolean unregisterFilter(AdmissionFilter filter) {
         Objects.requireNonNull(filter, "filter");
-        checkNotFrozen();
-        return filterList.remove(filter);
+        synchronized (mutationLock) {
+            checkRemovalAllowed();
+            return filterList.remove(filter);
+        }
     }
 
     @Override
@@ -164,7 +215,15 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         MatchedHttpExchange tracked = exchange instanceof MatchedHttpExchange matched
                 ? matched
                 : new MatchedHttpExchange(exchange, exchange.pathParams());
+        // The snapshot is taken before the phase is read: a removal is permitted only after teardown was
+        // written, so a request that does not see teardown holds a snapshot that predates every removal.
         List<AdmissionFilter> orderedFilters = filters();
+        if (phase == Phase.TEARDOWN) {
+            if (!tracked.responded()) {
+                tracked.respond(HttpStatus.SERVICE_UNAVAILABLE);
+            }
+            return false;
+        }
         for (AdmissionFilter filter : orderedFilters) {
             try {
                 boolean proceed = DefaultAdmissionContext.callWith(admission,
@@ -237,14 +296,20 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     @Override
     public void clear() {
-        checkNotFrozen();
-        routeList.clear();
-        filterList.clear();
+        synchronized (mutationLock) {
+            checkRemovalAllowed();
+            routeList.clear();
+            filterList.clear();
+        }
     }
 
     @Override
     public void handle(HttpExchange exchange) {
         Objects.requireNonNull(exchange, "exchange");
+        if (phase == Phase.TEARDOWN) {
+            exchange.respond(HttpStatus.SERVICE_UNAVAILABLE);
+            return;
+        }
         String rawPath = exchange.request().path();
         String cleanPath = stripQueryString(rawPath);
         HttpMethod method = exchange.request().method();
