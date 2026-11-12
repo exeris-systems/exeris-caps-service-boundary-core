@@ -603,7 +603,9 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
      */
     private static HttpStatus unmet(ApiSurfaceRoute route, RequestContext admitted) {
         PrincipalContext principal = admitted.principal().orElse(null);
-        for (RouteRequirement requirement : route.requirements()) {
+        List<RouteRequirement> requirements = route.requirements();
+        for (int i = 0, count = requirements.size(); i < count; i++) {
+            RouteRequirement requirement = requirements.get(i);
             // An exhaustive switch expression: a requirement kind added to the SPI is a compile error here
             // (and a MatchException, answered 500, against a newer SPI), never a requirement that is skipped.
             HttpStatus denial = switch (requirement.kind()) {
