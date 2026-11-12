@@ -105,6 +105,13 @@ import java.util.regex.Pattern;
  * point, leaves both as they were. {@link #filters()} returns a fresh unmodifiable list of that order and
  * exposes no live state.
  *
+ * <p><b>A change that has been made is not undone by a failure to log it.</b> Every mutator
+ * ({@code registerFilter}, {@code unregisterFilter}, {@code registerRoute}, {@code unregisterRoute},
+ * {@code clear}, {@code freeze}, {@code beginTeardown}) either throws and leaves the registry as it was, or
+ * commits and returns normally. A log record is written after the lock is released and after the commit; a
+ * failure to write it is diagnostics lost and is swallowed (a {@link VirtualMachineError} is not), and nothing
+ * else runs between the commit and the return.
+ *
  * @since 0.1.0
  */
 public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, RequestFilterChain {
@@ -232,7 +239,22 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             }
             routeList.add(RegisteredRoute.of(route));
         }
-        LOG.log(System.Logger.Level.DEBUG, "Registered boundary route: {0}", route);
+        diagnostic(System.Logger.Level.DEBUG, "Registered boundary route: {0}", route);
+    }
+
+    /**
+     * Writes a record after a mutation has been committed. The record is diagnostics: a handler or formatter
+     * that fails must not make a call throw when the registry has already changed, so the failure is swallowed.
+     * A {@link VirtualMachineError} is not.
+     */
+    private static void diagnostic(System.Logger.Level level, String format, Object... arguments) {
+        try {
+            LOG.log(level, format, arguments);
+        } catch (VirtualMachineError err) {
+            throw err;
+        } catch (Throwable ignored) {
+            // diagnostics only; the registry has already changed
+        }
     }
 
     @Override
@@ -273,7 +295,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             filterList.add(registered);
             orderedFilters = sorted;
         }
-        LOG.log(System.Logger.Level.DEBUG, "Registered admission filter: {0} ({1})", name, filterPhase);
+        diagnostic(System.Logger.Level.DEBUG, "Registered admission filter: {0} ({1})", name, filterPhase);
     }
 
     @Override
