@@ -5,6 +5,7 @@ import eu.exeris.caps.serviceboundarycore.api.AdmissionPhase;
 import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRoute;
 import eu.exeris.caps.serviceboundarycore.api.RouteMatch;
 import eu.exeris.caps.serviceboundarycore.api.TenantConflictException;
+import eu.exeris.caps.serviceboundarycore.testsupport.LogCapture;
 import eu.exeris.caps.serviceboundarycore.testsupport.Probes;
 import eu.exeris.caps.serviceboundarycore.testsupport.Probes.CountingFilter;
 import eu.exeris.caps.serviceboundarycore.testsupport.ScriptedExchange;
@@ -20,6 +21,8 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -112,8 +115,8 @@ class UnansweredExchangeTest {
     class FilterRespondsAndProceeds {
 
         @Test
-        @DisplayName("lets the handler run: the handler's own answer follows the filter's, nothing else is added")
-        void handlerStillRunsAfterAFilterAnswer() {
+        @DisplayName("ends admission: the handler does not run and the filter's answer is the only one")
+        void handlerDoesNotRunAfterAFilterAnswer() {
             filter("answers-then-proceeds", (ex, m) -> {
                 ex.respond(HttpStatus.ACCEPTED);
                 return true;
@@ -122,13 +125,13 @@ class UnansweredExchangeTest {
 
             ScriptedExchange exchange = handle();
 
-            assertThat(handlerRuns).hasValue(1);
-            assertThat(exchange.statuses()).containsExactly(HttpStatus.ACCEPTED, HttpStatus.OK);
+            assertThat(handlerRuns).hasValue(0);
+            assertThat(exchange.statuses()).containsExactly(HttpStatus.ACCEPTED);
         }
 
         @Test
-        @DisplayName("and a handler that then does not answer adds no 500, because the exchange counts as answered")
-        void silentHandlerAfterFilterAnswerIsNotAnswered500() {
+        @DisplayName("adds no 500 even for a handler that would not answer, because that handler never runs")
+        void silentHandlerIsNotReachedAfterFilterAnswer() {
             filter("answers-then-proceeds", (ex, m) -> {
                 ex.respond(HttpStatus.ACCEPTED);
                 return true;
@@ -137,6 +140,7 @@ class UnansweredExchangeTest {
 
             ScriptedExchange exchange = handle();
 
+            assertThat(handlerRuns).hasValue(0);
             assertThat(exchange.statuses()).containsExactly(HttpStatus.ACCEPTED);
         }
     }
@@ -321,16 +325,25 @@ class UnansweredExchangeTest {
         }
 
         @Test
-        @DisplayName("when answering 500 itself throws, the failure reaches the caller (observed)")
-        void respondFailureAfterExceptionPropagates() {
+        @DisplayName("when answering 500 itself throws, handle() returns normally and the failure is logged once at ERROR by class name")
+        void respondFailureAfterExceptionIsLoggedNotThrown() {
             route(ex -> {
                 throw new IllegalStateException("boom");
             });
             IllegalArgumentException respondFailure = new IllegalArgumentException("respond failed");
             ScriptedExchange exchange = ScriptedExchange.get(PATH).failOnRespondWith(respondFailure);
 
-            assertThatThrownBy(() -> registry.handle(exchange)).isSameAs(respondFailure);
-            assertThat(exchange.statuses()).containsExactly(HttpStatus.INTERNAL_SERVER_ERROR);
+            try (LogCapture log = new LogCapture(DefaultApiSurfaceRegistry.class)) {
+                assertThatCode(() -> registry.handle(exchange)).doesNotThrowAnyException();
+
+                assertThat(exchange.statuses()).containsExactly(HttpStatus.INTERNAL_SERVER_ERROR);
+                List<LogRecord> answering = log.at(Level.SEVERE).stream()
+                        .filter(r -> LogCapture.everything(r).contains(IllegalArgumentException.class.getName()))
+                        .toList();
+                assertThat(answering).hasSize(1);
+                assertThat(answering.get(0).getThrown()).isNull();
+                assertThat(LogCapture.everything(answering.get(0))).doesNotContain("respond failed");
+            }
         }
     }
 

@@ -29,6 +29,8 @@ public final class ScriptedExchange implements HttpExchange {
     private final HttpRequest request;
     private final List<Call> calls = new ArrayList<>();
     private final AtomicReference<Throwable> failure = new AtomicReference<>();
+    private final AtomicReference<Throwable> firstAttemptFailure = new AtomicReference<>();
+    private volatile boolean refuseSecondAnswer;
 
     public ScriptedExchange(HttpRequest request) {
         this.request = request;
@@ -45,6 +47,24 @@ public final class ScriptedExchange implements HttpExchange {
     /** Makes every later {@code respond} attempt throw the given unchecked throwable (after recording it). */
     public ScriptedExchange failOnRespondWith(Throwable throwable) {
         failure.set(throwable);
+        return this;
+    }
+
+    /**
+     * Makes the exchange behave as the kernel's does once it has been answered: a {@code respond} attempt that
+     * follows a recorded answer throws {@link IllegalStateException} before anything is recorded.
+     */
+    public ScriptedExchange refuseSecondAnswer() {
+        refuseSecondAnswer = true;
+        return this;
+    }
+
+    /**
+     * Makes the first {@code respond} attempt throw the given unchecked throwable before anything is recorded,
+     * as an exchange does when it fails while encoding a response. Later attempts are recorded normally.
+     */
+    public ScriptedExchange failFirstRespondBeforeRecordingWith(Throwable throwable) {
+        firstAttemptFailure.set(throwable);
         return this;
     }
 
@@ -98,6 +118,16 @@ public final class ScriptedExchange implements HttpExchange {
 
     private void record(Kind kind, HttpStatus status) {
         synchronized (this) {
+            if (refuseSecondAnswer && !calls.isEmpty()) {
+                throw new IllegalStateException("The exchange has already been answered");
+            }
+            Throwable beforeRecording = firstAttemptFailure.getAndSet(null);
+            if (beforeRecording instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            if (beforeRecording instanceof Error error) {
+                throw error;
+            }
             calls.add(new Call(kind, status));
         }
         Throwable toThrow = failure.get();
