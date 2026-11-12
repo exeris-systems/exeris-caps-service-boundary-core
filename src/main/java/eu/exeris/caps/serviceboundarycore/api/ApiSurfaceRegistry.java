@@ -73,9 +73,11 @@ public interface ApiSurfaceRegistry extends HttpHandler {
     void registerFilter(AdmissionFilter filter);
 
     /**
-     * Removes a previously registered admission filter.
+     * Removes a previously registered admission filter. A filter is identified by reference: pass the same
+     * instance that was registered. An instance that is equal to it but is not the same one removes nothing, and
+     * the registry never calls {@code equals}, {@code hashCode} or {@code toString} of a filter.
      *
-     * @param filter the filter to remove; never {@code null}
+     * @param filter the filter to remove, the instance that was registered; never {@code null}
      * @return {@code true} if the filter was removed, {@code false} otherwise
      */
     boolean unregisterFilter(AdmissionFilter filter);

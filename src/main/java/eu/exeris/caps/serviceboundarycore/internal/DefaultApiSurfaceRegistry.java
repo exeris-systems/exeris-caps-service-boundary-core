@@ -110,7 +110,11 @@ import java.util.regex.Pattern;
  * {@code clear}, {@code freeze}, {@code beginTeardown}) either throws and leaves the registry as it was, or
  * commits and returns normally. A log record is written after the lock is released and after the commit; a
  * failure to write it is diagnostics lost and is swallowed (a {@link VirtualMachineError} is not), and nothing
- * else runs between the commit and the return.
+ * else runs between the commit and the return. No code supplied by a caller runs under {@code mutationLock}: a
+ * filter is identified by reference ({@code ==}), so {@code equals}, {@code hashCode} and {@code toString} of a
+ * filter are never called by the registry, and a filter is removed by passing the same instance that was
+ * registered. A route is removed when it equals the given one, which compares its method, path pattern and
+ * action name (library types only), and its handler is the same instance.
  *
  * @since 0.1.0
  */
@@ -304,7 +308,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         synchronized (mutationLock) {
             checkRemovalAllowed();
             for (int i = 0; i < filterList.size(); i++) {
-                if (filterList.get(i).filter().equals(filter)) {
+                if (filterList.get(i).filter() == filter) {
                     RegisteredFilter[] remaining = new RegisteredFilter[filterList.size() - 1];
                     for (int k = 0, j = 0; k < filterList.size(); k++) {
                         if (k != i) {
