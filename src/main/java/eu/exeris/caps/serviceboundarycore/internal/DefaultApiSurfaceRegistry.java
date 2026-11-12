@@ -117,6 +117,10 @@ import java.util.regex.Pattern;
  * registered. A route is removed when it equals the given one, which compares its method, path pattern and
  * action name (library types only), and its handler is the same instance.
  *
+ * <p>Only {@code registerFilter} and {@code registerRoute} write a record; the other mutators write none. A
+ * {@link VirtualMachineError} raised while such a record is written is the one case in which a mutator throws
+ * after it has committed: the error propagates and the change stands.
+ *
  * @since 0.1.0
  */
 public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, RequestFilterChain {
