@@ -40,23 +40,30 @@ import java.util.regex.Pattern;
  * <p>After the filters, the route's {@link RouteRequirement}s are enforced against the admitted principal
  * before the handler runs; a request that does not satisfy them is answered 401 or 403.
  *
- * <p>No matched exchange is left unanswered. A filter that returns {@code false} without responding, and a
- * handler that returns without responding, are answered 500 by the registry; a filter or handler that throws
- * an {@link Exception} is answered 500; one that throws an {@link Error} is answered 500 when still unanswered
- * and the error is rethrown (a {@link VirtualMachineError} is rethrown without an attempt to answer). An
- * exchange on which {@code respond} was already called is never answered again by the registry.
+ * <p>No matched exchange is left unanswered. A filter that returns {@code false} without having answered, and a
+ * handler that returns without having answered, are answered 500 by the registry; a filter or handler that
+ * throws an {@link Exception} is answered 500 when still unanswered; one that throws an {@link Error} is
+ * answered 500 when still unanswered and the error is rethrown (a {@link VirtualMachineError} is rethrown
+ * without an attempt to answer).
  *
- * <p>Once an exchange is answered, admission is over. After each filter returns, the registry reads whether
- * the exchange has been answered; if it has, the remaining filters and the handler do not run, whatever the
- * filter returned. A filter that answered and returned {@code true} is a contract violation and is logged
- * once at WARNING. A second {@code respond} issued by a filter or handler is refused by the kernel's exchange
- * with {@link IllegalStateException}; the registry adds no guard of its own.
+ * <p>An exchange is answered when a {@code respond} call on it returned normally. A {@code respond} call that
+ * threw has not answered it, and the registry answers 500 once, whether the kernel had claimed the response
+ * before it failed (the attempt is then refused) or not (the attempt then succeeds); it cannot tell which
+ * beforehand. An exchange that has been answered is never answered again by the registry.
  *
- * <p>When the registry's own attempt to answer 500 fails, one rule holds for filters and handlers alike. If the
- * original failure was an {@link Error}, that error leaves {@code handle} with the answering failure attached
- * as suppressed. Otherwise the answering failure is logged once at ERROR by class name and {@code handle}
- * returns normally, since nothing more can be done for the exchange. A {@link VirtualMachineError} thrown by
- * the answering attempt always propagates.
+ * <p>Once an exchange is answered, admission is over. After each filter returns, the registry reads whether a
+ * {@code respond} was attempted on the exchange; if so, the remaining filters and the handler do not run,
+ * whatever the filter returned, because a filter that tried to answer has decided to refuse the request. If the
+ * attempt did not complete the registry answers 500. A filter that answered and returned {@code true} is a
+ * contract violation and is logged once at WARNING. A second {@code respond} issued by a filter or handler is
+ * refused by the kernel's exchange with {@link IllegalStateException}; the registry adds no guard of its own.
+ *
+ * <p>Every answer the registry writes itself (401, 403, 404, 405, 503 and 500) goes through one rule. If the
+ * write fails and the failure being handled is an {@link Error}, that error leaves the registry with the write
+ * failure attached as suppressed. Otherwise the write failure is logged once at ERROR, naming the status, what
+ * was being answered, the route's path pattern when a route matched and the failure's class, and the registry
+ * returns normally, since nothing more can be done for the exchange. A request whose denial could not be written
+ * is finished: the handler does not run. A {@link VirtualMachineError} thrown by a write always propagates.
  *
  * <p>The registry moves one way through three phases: {@code OPEN}, {@code FROZEN}, {@code TEARDOWN}
  * ({@code OPEN} may go straight to {@code TEARDOWN}). While {@code OPEN} routes and filters may be added and
@@ -245,7 +252,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         List<AdmissionFilter> orderedFilters = filters();
         if (phase == Phase.TEARDOWN) {
             if (!tracked.responded()) {
-                tracked.respond(HttpStatus.SERVICE_UNAVAILABLE);
+                answer(tracked, HttpStatus.SERVICE_UNAVAILABLE, null, "registry is tearing down", routeMatch, null);
             }
             return false;
         }
@@ -254,8 +261,16 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                 boolean proceed = DefaultAdmissionContext.callWith(admission,
                         () -> DefaultRequestContext.bind(admission.requestContext(),
                                 () -> filter.filter(tracked, routeMatch)));
-                if (tracked.responded()) {
-                    if (proceed) {
+                if (tracked.attempted()) {
+                    if (!tracked.responded()) {
+                        // The filter tried to answer and the answer did not complete. It has decided to refuse,
+                        // so admission ends here whatever it returned.
+                        LOG.log(System.Logger.Level.WARNING,
+                                "Admission filter {0} tried to answer route {1} and the answer did not complete; "
+                                        + "answering 500",
+                                filter.getClass().getName(), routeMatch.route().pathPattern());
+                        answerInternalError(tracked, null, routeMatch);
+                    } else if (proceed) {
                         LOG.log(System.Logger.Level.WARNING,
                                 "Admission filter {0} answered route {1} and returned true; admission ends",
                                 filter.getClass().getName(), routeMatch.route().pathPattern());
@@ -274,7 +289,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             } catch (TenantConflictException ex) {
                 LOG.log(System.Logger.Level.DEBUG, "Tenant conflict in admission filter {0}", filter.name());
                 if (!tracked.responded()) {
-                    tracked.respond(HttpStatus.FORBIDDEN);
+                    answer(tracked, HttpStatus.FORBIDDEN, null, "tenant conflict", routeMatch, null);
                 }
                 return false;
             } catch (Exception ex) {
@@ -311,37 +326,65 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     }
 
     /**
-     * Answers 500 on an exchange that is still unanswered, and decides what a failure of that attempt does.
-     * An exchange that was already answered is left alone. {@code original} is the failure being answered, or
-     * {@code null} when a filter or handler returned without answering.
-     *
-     * <ul>
-     *   <li>A {@link VirtualMachineError} thrown by the attempt always propagates, with {@code original}
-     *       attached to it as suppressed.</li>
-     *   <li>When {@code original} is an {@link Error}, any other failure of the attempt is attached to it as
-     *       suppressed and the caller rethrows {@code original}.</li>
-     *   <li>Otherwise the failure of the attempt is logged once at ERROR by class name, without its message,
-     *       and this method returns normally.</li>
-     * </ul>
+     * Answers 500 on an exchange that is still unanswered. An exchange that was already answered is left
+     * alone; one whose earlier answer was attempted and did not complete is answered once more, because the
+     * kernel refuses a second answer only after it has claimed the first. {@code original} is the failure
+     * being answered, or {@code null} when a filter or handler returned without answering. A failure of the
+     * attempt is handled by {@link #answer}.
      */
     private static void answerInternalError(MatchedHttpExchange exchange, Throwable original, RouteMatch routeMatch) {
         if (exchange.responded()) {
             return;
         }
+        answer(exchange, HttpStatus.INTERNAL_SERVER_ERROR, null, "unanswered or failed request", routeMatch,
+                original);
+    }
+
+    /**
+     * The one place the registry writes an answer of its own: a requirement denial, a tenant conflict, a 404,
+     * a 405, a 503 or a 500. The write is attempted once, and one rule decides what its failure does.
+     *
+     * <ul>
+     *   <li>A {@link VirtualMachineError} thrown by the write always propagates, with {@code original}
+     *       attached to it as suppressed.</li>
+     *   <li>When {@code original}, the failure being handled, is an {@link Error}, any other failure of the
+     *       write is attached to it as suppressed and the caller rethrows {@code original}.</li>
+     *   <li>Otherwise the failure of the write is logged once at ERROR, naming the status, what it answered,
+     *       the route's path pattern when a route matched and the failure's class, never its message, and this
+     *       method returns normally. The caller treats the exchange as finished: the handler does not run.</li>
+     * </ul>
+     *
+     * @param response the response to write, or {@code null} to write a bare {@code status}
+     * @param reason   what the registry was answering, for the log
+     * @param routeMatch the matched route, or {@code null} when no route matched
+     * @param original the failure being answered, or {@code null}
+     */
+    private static void answer(HttpExchange exchange, HttpStatus status, HttpResponse response, String reason,
+                               RouteMatch routeMatch, Throwable original) {
         try {
-            exchange.respond(HttpStatus.INTERNAL_SERVER_ERROR);
+            if (response != null) {
+                exchange.respond(response);
+            } else {
+                exchange.respond(status);
+            }
         } catch (VirtualMachineError fatal) {
-            if (original != null) {
+            if (original != null && original != fatal) {
                 fatal.addSuppressed(original);
             }
             throw fatal;
-        } catch (RuntimeException | Error answerFailure) {
+        } catch (RuntimeException | Error writeFailure) {
             if (original instanceof Error err) {
-                err.addSuppressed(answerFailure);
+                if (err != writeFailure) {
+                    err.addSuppressed(writeFailure);
+                }
+            } else if (routeMatch != null) {
+                LOG.log(System.Logger.Level.ERROR,
+                        "Answering {0} ({1}) failed with {2} on route {3}; the exchange is abandoned",
+                        status.code(), reason, writeFailure.getClass().getName(), routeMatch.route().pathPattern());
             } else {
                 LOG.log(System.Logger.Level.ERROR,
-                        "Answering 500 failed with {0} on route {1}; the exchange is abandoned",
-                        answerFailure.getClass().getName(), routeMatch.route().pathPattern());
+                        "Answering {0} ({1}) failed with {2}; the exchange is abandoned",
+                        status.code(), reason, writeFailure.getClass().getName());
             }
         }
     }
@@ -426,7 +469,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     public void handle(HttpExchange exchange) {
         Objects.requireNonNull(exchange, "exchange");
         if (phase == Phase.TEARDOWN) {
-            exchange.respond(HttpStatus.SERVICE_UNAVAILABLE);
+            answer(exchange, HttpStatus.SERVICE_UNAVAILABLE, null, "registry is tearing down", null, null);
             return;
         }
         String rawPath = exchange.request().path();
@@ -437,6 +480,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         if (matchOpt.isPresent()) {
             RouteMatch match = matchOpt.get();
             MatchedHttpExchange effectiveExchange = new MatchedHttpExchange(exchange, match.pathParams());
+            boolean handlerStarted = false;
             try {
                 DefaultAdmissionContext admission = DefaultAdmissionContext.open();
                 if (!admit(effectiveExchange, match, admission)) {
@@ -446,19 +490,26 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                 RequestContext admitted = admission.requestContext();
                 HttpStatus denial = unmet(match.route(), admitted);
                 if (denial != null) {
-                    effectiveExchange.respond(denial);
+                    // Whether or not the write succeeds, the request is over: the handler never runs.
+                    answer(effectiveExchange, denial, null, "unmet route requirement", match, null);
                     return;
                 }
+                handlerStarted = true;
                 runHandler(match, effectiveExchange, admitted);
             } catch (TenantConflictException ex) {
                 LOG.log(System.Logger.Level.DEBUG, "Tenant conflict in route processing", ex);
                 if (!effectiveExchange.responded()) {
-                    effectiveExchange.respond(HttpStatus.FORBIDDEN);
+                    answer(effectiveExchange, HttpStatus.FORBIDDEN, null, "tenant conflict", match, null);
                 }
             } catch (Exception ex) {
-                LOG.log(System.Logger.Level.ERROR, "Handler {0} threw {1} on route {2}",
-                        match.route().handler().getClass().getName(), ex.getClass().getName(),
-                        match.route().pathPattern());
+                if (handlerStarted) {
+                    LOG.log(System.Logger.Level.ERROR, "Handler {0} threw {1} on route {2}",
+                            match.route().handler().getClass().getName(), ex.getClass().getName(),
+                            match.route().pathPattern());
+                } else {
+                    LOG.log(System.Logger.Level.ERROR, "Admission of route {0} threw {1}",
+                            match.route().pathPattern(), ex.getClass().getName());
+                }
                 answerInternalError(effectiveExchange, ex, match);
             }
             return;
@@ -476,9 +527,11 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             String allowHeaderValue = String.join(", ", allowedMethods);
             List<HttpHeader> headers = List.of(new HttpHeader("Allow", allowHeaderValue));
             HttpVersion version = exchange.request().version() != null ? exchange.request().version() : HttpVersion.HTTP_1_1;
-            exchange.respond(new HttpResponse(HttpStatus.METHOD_NOT_ALLOWED, version, headers, null));
+            answer(exchange, HttpStatus.METHOD_NOT_ALLOWED,
+                    new HttpResponse(HttpStatus.METHOD_NOT_ALLOWED, version, headers, null),
+                    "method not allowed for a matched path", null, null);
         } else {
-            exchange.respond(HttpStatus.NOT_FOUND);
+            answer(exchange, HttpStatus.NOT_FOUND, null, "no route matches the path", null, null);
         }
     }
 
