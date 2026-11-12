@@ -21,6 +21,9 @@ import java.util.UUID;
  * or attributes, and a new one after it. Contexts are immutable, so an instance handed to a filter keeps the
  * state it was built from.
  *
+ * <p>All contexts built for one request return the same correlation identifier, generated when something
+ * first reads it (see {@link DefaultRequestContext}); opening the admission context generates none.
+ *
  * <p>The attribute map is allocated by the first write that changes it; a request whose filters set no
  * attribute allocates none, and reading an empty one allocates nothing.
  *
@@ -30,7 +33,12 @@ public final class DefaultAdmissionContext implements AdmissionContext {
 
     private static final ScopedValue<DefaultAdmissionContext> CURRENT = ScopedValue.newInstance();
 
-    private final RequestContext seed;
+    /**
+     * The context whose correlation identifier every context built here returns: the host-bound context when
+     * there was one, otherwise the first context built, which draws its own identifier when first read. Null
+     * until that first build. Confined to the owner thread like {@link #established}.
+     */
+    private RequestContext correlationSource;
     /**
      * The attributes admission has established. Until the first write it is the seed's immutable map, which is
      * shared and never modified; the first write that changes it replaces it with a private mutable copy.
@@ -51,20 +59,24 @@ public final class DefaultAdmissionContext implements AdmissionContext {
     private boolean sealed;
 
     private DefaultAdmissionContext(RequestContext seed) {
-        this.seed = Objects.requireNonNull(seed, "seed");
-        this.attributes = Map.copyOf(seed.attributes());
-        this.principal = seed.principal().orElse(null);
-        this.tenantId = seed.tenantId().orElse(null);
+        this.correlationSource = seed;
+        if (seed != null) {
+            this.attributes = Map.copyOf(seed.attributes());
+            this.principal = seed.principal().orElse(null);
+            this.tenantId = seed.tenantId().orElse(null);
+        } else {
+            this.attributes = Map.of();
+        }
     }
 
     /**
      * Opens an admission context seeded from the {@link RequestContext} already bound by the host, if any.
+     * When the host bound none, nothing is built and no correlation identifier is generated here.
      *
      * @return a new, unsealed admission context
      */
     public static DefaultAdmissionContext open() {
-        RequestContext seed = RequestContext.isBound() ? RequestContext.current() : RequestContext.builder().build();
-        return new DefaultAdmissionContext(seed);
+        return new DefaultAdmissionContext(RequestContext.isBound() ? RequestContext.current() : null);
     }
 
     public static AdmissionContext current() {
@@ -152,7 +164,10 @@ public final class DefaultAdmissionContext implements AdmissionContext {
         requireOwner();
         RequestContext built = established;
         if (built == null) {
-            built = DefaultRequestContext.of(tenantId, seed.correlationId(), principal, sessionId, attributes);
+            built = DefaultRequestContext.derived(tenantId, correlationSource, principal, sessionId, attributes);
+            if (correlationSource == null) {
+                correlationSource = built;
+            }
             established = built;
         }
         return built;

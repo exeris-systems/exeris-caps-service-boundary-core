@@ -39,6 +39,11 @@ public interface RequestContext {
     /**
      * Returns the correlation identifier for distributed tracing and logging.
      *
+     * <p>When none was set, an unpredictable identifier is generated the first time anything reads this one, not
+     * when the context is built; a context whose identifier nobody reads never generates one. Once generated it
+     * is the same value for every later read, on any thread, and for every context that admission derives for
+     * the same request. Comparing, hashing or printing a context reads it.
+     *
      * @return correlation ID; never {@code null}
      */
     String correlationId();
@@ -155,7 +160,8 @@ public interface RequestContext {
         Builder tenantId(String tenantId);
 
         /**
-         * Sets the correlation identifier; a blank one is replaced by a generated identifier at build time.
+         * Sets the correlation identifier; a blank one is replaced by a generated identifier when the built
+         * context's {@link RequestContext#correlationId()} is first read.
          *
          * @param correlationId correlation identifier; non-null
          * @return this builder
