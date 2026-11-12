@@ -23,6 +23,11 @@ import java.util.regex.Pattern;
  * so a route that declares requirements fails closed when no filter authenticates.
  * {@link RouteRequirement#abstain()} declares nothing about a route and is refused.
  *
+ * <p>The requirements of a route are conjunctive: each one is evaluated in order and the first one that is
+ * not met denies the request. {@link RouteRequirement#permitAll()} is always met, so mixed with another
+ * requirement it adds nothing: the other requirement is enforced, and the route is not anonymous. A list
+ * containing {@code permitAll()} is non-empty, so it satisfies strict route mode.
+ *
  * <p>Path patterns support parameterized segments such as {@code /api/v1/orders/{id}}
  * or {@code /users/{userId}/addresses/{addressId}}.
  *

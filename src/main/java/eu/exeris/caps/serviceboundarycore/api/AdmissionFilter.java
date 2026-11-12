@@ -29,9 +29,20 @@ public interface AdmissionFilter {
     /**
      * Evaluates the incoming request and matched route.
      *
+     * <p>Once the exchange is answered, admission is over. An exchange is answered when a {@code respond} call
+     * on it returned normally. After each filter returns, the registry reads whether a {@code respond} was
+     * attempted on the exchange; if so, the remaining filters and the handler do not run, whatever this method
+     * returned, because a filter that tried to answer has decided to refuse the request. If that attempt threw,
+     * the exchange is not answered and the registry answers 500 once. A filter that answered and returned
+     * {@code true} violates this contract and is logged once at WARNING, naming the route's path pattern and the
+     * filter's class. A filter must not call {@code respond} a second time after one returned: the kernel's
+     * exchange refuses it with {@link IllegalStateException}.
+     *
      * @param exchange incoming HTTP exchange
      * @param routeMatch matched route definition and extracted parameters
-     * @return {@code true} to proceed to the next filter/handler, or {@code false} if request handling was completed
+     * @return {@code true} to proceed to the next filter/handler, or {@code false} when the filter has
+     *         answered the exchange; a filter that returns {@code false} without having answered has the
+     *         exchange answered 500 by the registry
      */
     boolean filter(HttpExchange exchange, RouteMatch routeMatch);
 }

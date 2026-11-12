@@ -172,7 +172,7 @@ class ServiceBoundaryCoreModuleTest {
         ServiceBoundaryCoreModule module = new ServiceBoundaryCoreModule();
         ApiSurfaceRegistry registry = module.apiSurfaceRegistry();
 
-        ApiSurfaceRoute existingRoute = ApiSurfaceRoute.builder()
+        ApiSurfaceRoute existingRoute = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                 .method(HttpMethod.GET)
                 .pathPattern("/existing")
                 .actionName("Exist#get")
@@ -189,7 +189,7 @@ class ServiceBoundaryCoreModuleTest {
 
         module.ready();
 
-        ApiSurfaceRoute newRoute = ApiSurfaceRoute.builder()
+        ApiSurfaceRoute newRoute = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                 .method(HttpMethod.GET)
                 .pathPattern("/new")
                 .actionName("New#get")
@@ -230,11 +230,9 @@ class ServiceBoundaryCoreModuleTest {
     }
 
     @Test
-    @DisplayName("strict mode refuses an empty-requirement route and accepts permitAll")
+    @DisplayName("strict is the default: an empty-requirement route is refused and permitAll is accepted; strictRoutes(false) opts out")
     void strictModeRouteRequirements() {
-        ServiceBoundaryCoreModule strictModule = ServiceBoundaryCoreModule.builder()
-                .strictRoutes(true)
-                .build();
+        ServiceBoundaryCoreModule strictModule = new ServiceBoundaryCoreModule();
         assertThat(strictModule.isStrictRoutes()).isTrue();
         ApiSurfaceRegistry strictRegistry = strictModule.apiSurfaceRegistry();
 
@@ -245,11 +243,11 @@ class ServiceBoundaryCoreModuleTest {
                 .handler(ex -> ex.respond(HttpStatus.OK))
                 .build();
 
-        // Strict mode refuses empty requirements
+        // The default refuses empty requirements
         assertThatThrownBy(() -> strictRegistry.registerRoute(emptyReqRoute))
                 .isInstanceOf(IllegalStateException.class);
 
-        // Strict mode accepts permitAll via kernel RouteRequirement.permitAll()
+        // and accepts permitAll via kernel RouteRequirement.permitAll()
         ApiSurfaceRoute kernelPermitAllRoute = ApiSurfaceRoute.builder()
                 .method(HttpMethod.GET)
                 .pathPattern("/kernel-permit-all")
@@ -260,11 +258,11 @@ class ServiceBoundaryCoreModuleTest {
         strictRegistry.registerRoute(kernelPermitAllRoute);
         assertThat(strictRegistry.routeCount()).isEqualTo(1);
 
-        // Non-strict mode accepts empty requirements
-        ServiceBoundaryCoreModule nonStrictModule = new ServiceBoundaryCoreModule();
-        assertThat(nonStrictModule.isStrictRoutes()).isFalse();
-        nonStrictModule.apiSurfaceRegistry().registerRoute(emptyReqRoute);
-        assertThat(nonStrictModule.apiSurfaceRegistry().routeCount()).isEqualTo(1);
+        // The explicit opt-out accepts empty requirements
+        ServiceBoundaryCoreModule lenientModule = ServiceBoundaryCoreModule.builder().strictRoutes(false).build();
+        assertThat(lenientModule.isStrictRoutes()).isFalse();
+        lenientModule.apiSurfaceRegistry().registerRoute(emptyReqRoute);
+        assertThat(lenientModule.apiSurfaceRegistry().routeCount()).isEqualTo(1);
 
         // Builder refuses custom registry with strictRoutes
         assertThatThrownBy(() -> ServiceBoundaryCoreModule.builder()

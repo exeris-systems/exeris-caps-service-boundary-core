@@ -575,7 +575,7 @@ class AdmissionContextPropagationTest {
     }
 
     private ApiSurfaceRoute route(HttpHandler handler) {
-        ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+        ApiSurfaceRoute route = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                 .method(HttpMethod.GET)
                 .pathPattern("/api/me")
                 .actionName("Me#get")

@@ -20,6 +20,7 @@ import eu.exeris.kernel.spi.http.HttpVersion;
 import eu.exeris.sdk.composition.lifecycle.CapabilityLifecycleHooks;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import eu.exeris.kernel.spi.http.RouteRequirement;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -37,7 +38,7 @@ class ServiceBoundaryCoreTeardownTest {
     // ---- module-level behaviour ----------------------------------------------------------------------------
 
     private static ApiSurfaceRoute route(String path) {
-        return ApiSurfaceRoute.builder().method(HttpMethod.GET).pathPattern(path).actionName("T#" + path)
+        return ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll())).method(HttpMethod.GET).pathPattern(path).actionName("T#" + path)
                 .handler(ex -> ex.respond(HttpStatus.OK)).build();
     }
 

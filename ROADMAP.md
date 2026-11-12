@@ -4,7 +4,7 @@ type: roadmap
 visibility: public
 owning-repo: exeris-caps-service-boundary-core
 status: active
-last-verified: 2026-10-15
+last-verified: 2026-11-12
 ---
 
 # exeris-caps-service-boundary-core — Roadmap
@@ -21,6 +21,40 @@ No item.
 
 ## Later
 
+### The admission path allocates on every request
+
+The organisation's rule is that a request path does not allocate, and the admission path of `handle()` does,
+for a route with no filter and no path parameter as for any other. An allocation test in this repository, built
+on the kernel TCK's allocation monitor, measures a steady non-zero allocation per `handle()` call for an
+anonymous route, and it pins that strict mode adds none; it does not pin the total. Reading the code, the
+sites on the success path are the following, in `internal/` unless stated.
+
+- `DefaultApiSurfaceRegistry.handle`: a `MatchedHttpExchange` per request, and the `Optional` and `RouteMatch`
+  returned by `matchRoute`.
+- `DefaultApiSurfaceRegistry.matchRoute`: an iterator over the copy-on-write route list; for a parameterised
+  route, the `LinkedHashMap`, the `Matcher` and the captured substrings of `ApiSurfaceRoute.extractPathParams`,
+  then the copies made by the `RouteMatch` and `MatchedHttpExchange` constructors (`Map.copyOf`).
+- `api/ApiSurfaceRoute.matchesPath` and `normalizePath`: a `Matcher` for each parameterised route scanned, and
+  a new string when the path has a trailing slash or no leading one.
+- `DefaultApiSurfaceRegistry.stripQueryString`: a substring when the path carries a query string.
+- `DefaultApiSurfaceRegistry.admit` and `filters()`: an `ArrayList` copy of the filters, a sort, and an
+  unmodifiable wrapper, on every request; the iteration over them; and, for each filter, two lambdas capturing
+  the filter, the exchange and the route match.
+- `DefaultAdmissionContext.open`: the admission context with its `LinkedHashMap`, and, when the host bound no
+  `RequestContext`, a builder, a context and a `UUID.randomUUID().toString()` correlation id.
+- `DefaultAdmissionContext.requestContext`: a new builder, `LinkedHashMap` and `DefaultRequestContext` on each
+  call, which `admit` makes for each filter and `handle` makes once more before the handler.
+- `DefaultAdmissionContext.callWith`, `DefaultRequestContext.bind`: a `ScopedValue` carrier per binding, two
+  per filter and one for the handler.
+- `DefaultApiSurfaceRegistry.runHandler`: a lambda capturing the route match and the exchange.
+- `DefaultApiSurfaceRegistry.unmet`: an iterator over the route's requirements.
+
+Those named from the code read are the call sites above; the allocation that each `ScopedValue` binding,
+iterator and lambda performs after the JIT's escape analysis is not measured per site. Closing the gap needs
+the route index to hand out a preallocated match and path-parameter holder, the filter order computed once at
+freeze and read without a copy, a request context built once and updated in place or lent to the handler, and
+a binding that captures no per-request state, each pinned by the allocation test with a total of zero.
+
 ### A composition that skips the boundary's drain leaves attached filters in place
 
 Teardown begins in the boundary's `drain` or `terminate`. A composition that terminates a capability while the
@@ -36,24 +70,6 @@ matched route and never seals the admission context; only `ApiSurfaceRegistry.ha
 (`internal/DefaultApiSurfaceRegistry.java`, `execute` and `handle`). A host that drives the chain directly, as
 the gateway `policy-chain` host would, gets filters without the 401 and 403 answers. This waits on the rule for
 that host: either `execute` returns the denial, or the requirement check moves into a shared step.
-
-### A filter or handler that does not answer leaves the exchange open
-
-When a filter returns `false` without responding, `handle()` returns without answering (`admit` and `handle` in
-`internal/DefaultApiSurfaceRegistry.java`), and a handler that returns without responding is not answered
-either. A filter that throws an `Exception` is answered 500, but an `Error` propagates out of `handle()`
-unanswered. The request is never served, so nothing is admitted by mistake, but the caller waits. Whether the
-kernel completes an unanswered exchange has not been verified here. A default 500 after an unanswered `false`
-would make the contract independent of that.
-
-### A route without requirements is served anonymously by default
-
-A route built with no requirements, or with `null`, declares nothing and is served to a request that no filter
-authenticated (`api/ApiSurfaceRoute.java`, constructor; README, "Route requirements are enforced"). A
-composition can already make a forgotten requirement fail closed: `ServiceBoundaryCoreModule.builder()
-.strictRoutes(true)` refuses such a route at registration, and `RouteRequirement.permitAll()` declares an
-anonymous one. Strict mode is opt-in. Making it the default changes every consumer's routes, so it waits on a
-decision before any consumer depends on the current default.
 
 ### Unmatched requests skip admission
 

@@ -32,11 +32,21 @@ the handler has no `AdmissionContext` and cannot change it.
   principal carries a different tenant, the request is refused with 403 (bare status, naming no tenant).
   Equal tenants, or a host with no bound tenant, keep normal admission.
 - **Route requirements are enforced.** After the filters, the registry answers 401 when a route requires an
-  authenticated principal and none was recorded, and 403 when the principal lacks a required scope. A route
-  with no requirement, or `RouteRequirement.permitAll()`, is served anonymously.
-- **Strict routes mode.** When enabled on `ServiceBoundaryCoreModule` (via `ServiceBoundaryCoreModule.builder().strictRoutes(true).build()`),
-  `registerRoute` refuses routes with an empty requirement list by throwing `IllegalStateException`. Routes
-  explicitly declared anonymous must use `RouteRequirement.permitAll()`. Non-strict mode preserves the default behaviour.
+  authenticated principal and none was recorded, and 403 when the principal lacks a required scope.
+  Requirements are conjunctive. `RouteRequirement.permitAll()` is always met, so mixed with another
+  requirement it adds nothing: the other requirement is enforced and the route is not anonymous. Such a list is
+  non-empty, so it satisfies strict route mode.
+- **Strict routes by default.** A route must declare what it requires. The default registry, and so a
+  `ServiceBoundaryCoreModule` built with `new ServiceBoundaryCoreModule()` or `ServiceBoundaryCoreModule.builder().build()`,
+  refuses at registration, with `IllegalStateException`, a route whose requirement list is empty or `null`.
+  A route that is meant to be anonymous says so with `RouteRequirement.permitAll()`, and is then served to a
+  request that no filter authenticated. `ServiceBoundaryCoreModule.builder().strictRoutes(false)` (or
+  `new DefaultApiSurfaceRegistry(false)`) turns the refusal off, and a route without a requirement is then
+  served anonymously; it exists for compositions that have not declared their routes yet, and every route
+  registered that way is open to all callers. Strict mode belongs to the default registry: `strictRoutes(true)`
+  combined with a custom registry is refused at `build()`. `ServiceBoundaryCoreModule.isStrictRoutes()` reads
+  the registry in use: `true` for a strict `DefaultApiSurfaceRegistry`, whether the module built it or was
+  handed it, and `false` for a lenient one and for any other `ApiSurfaceRegistry`, whose policy is not known.
 - **Registry phases.** The default registry moves one way: open, frozen, teardown.
   `ServiceBoundaryCoreModule.ready()` freezes it; while frozen the service is serving and all mutators
   (`registerRoute`, `unregisterRoute`, `registerFilter`, `unregisterFilter`, and `clear()`) throw
@@ -48,6 +58,53 @@ the handler has no `AdmissionContext` and cannot change it.
   boundary before terminating any capability needs to do nothing more. A composition that terminates capabilities
   without draining the boundary, or terminates the boundary after them, calls `beginTeardown()` before
   terminating the first of them. Teardown is one-way: `ready()` after it throws.
+- **No matched exchange is left unanswered.** The registry does not rely on the kernel to complete an exchange
+  a filter or handler left open. It answers 500 (a bare status with no body and no headers, unlike the 405
+  answer, which carries an `Allow` header) when a filter returns `false` without having responded, when the
+  handler returns without having responded, and when a filter or handler throws an `Exception`. When a filter
+  or handler throws an `Error`, the registry answers 500 if the exchange is still unanswered and rethrows the
+  same `Error`; for a `VirtualMachineError` (for example `OutOfMemoryError`) it rethrows without attempting to
+  answer. An exchange is answered when a `respond` call on it returned normally, and the registry never answers
+  an answered exchange a second time. A `respond` call that threw has not answered the exchange (an encoder
+  failure or an `IllegalArgumentException` before anything was written, for instance), so the registry answers
+  500 once: if the kernel had not yet claimed the response the answer is written, and if it had, the kernel
+  refuses it and the failure rule below applies. The registry cannot tell the two apart beforehand and does not
+  try. A denial through a filter that did respond, a 401 or 403 from a route requirement, and a 403 from a
+  tenant conflict are unchanged. The registry logs one WARNING for an unanswered filter or handler, naming the
+  route's path pattern and the class of the filter or handler, and no header or body value. A thrown
+  `Exception` is logged once at ERROR with the route's path pattern, the class of the filter or handler and
+  the exception's class name; the throwable and its message are not logged, because a message may hold
+  request data.
+- **Admission ends when the exchange is answered.** An exchange is answered when a `respond` call on it
+  returned normally. After each filter returns, the registry reads whether a `respond` was attempted on the
+  exchange. If one was, the remaining filters and the handler do not run, whatever the filter returned: a filter
+  that tried to answer has decided to refuse the request, so a failed attempt never lets the request through.
+  If that attempt threw, the exchange is not answered and the registry answers 500 once. A filter that answered
+  and returned `true` is a contract violation and is logged once at WARNING with the route's path pattern and
+  the filter's class; a filter that tried to answer and failed is logged once at WARNING in the same way. The
+  check is one read of the state the registry already keeps, per filter, on the success path. A second `respond`
+  on an exchange, by a filter or by a handler, is the kernel's refusal: the exchange throws
+  `IllegalStateException` before writing anything, and the registry adds no guard of its own.
+- **When an answer the registry writes itself fails.** One rule covers every answer the registry writes: the 500
+  for an unanswered or failed filter or handler, the 401 and 403 for a route requirement, the 403 for a tenant
+  conflict (from a filter and from a handler), the 404, the 405 and the 503. If the original failure was an
+  `Error`, that `Error` leaves `handle()` with the answering failure attached as suppressed. Otherwise (the
+  original was an `Exception`, the filter or handler returned without answering, or there was no failure to
+  answer, as with a denial) the answering failure is logged once at ERROR by class name and `handle()` returns
+  normally, since nothing more can be done for that exchange. The record names the status, what was being
+  answered (for instance the 401 for an unmet route requirement), the route's path pattern when a route
+  matched, and the failure's class; it names no handler or filter that did not run, and no message. A
+  `VirtualMachineError` thrown by the answering attempt always propagates. A request whose denial could not be
+  written is finished: the handler does not run. `RequestFilterChain.execute(...)` follows the same rule for the
+  answers it writes (a tenant conflict, a 503, a 500), so no failure leaves it unlogged except an `Error` being
+  handled, which it rethrows.
+- **A handler answers before it returns.** The kernel's `HttpHandler` contract is to call
+  `HttpExchange.respond` exactly once before returning, and this capability has no way for a handler to
+  answer later: a handler that returns first is answered 500, and an answer it writes afterwards is not
+  part of the contract. The same holds for a filter, which answers before it returns `false`.
+  The guarantee covers exchanges dispatched through `ApiSurfaceRegistry.handle()`; a host that drives
+  `RequestFilterChain.execute(...)` itself receives the same 500 for an unanswered `false`, and answers the
+  exchange itself after `execute` returns `true`.
 - **Unmatched requests skip admission.** A path or method that matches no route is answered 404 or 405
   before any filter runs, so rate limiting does not see them.
 
