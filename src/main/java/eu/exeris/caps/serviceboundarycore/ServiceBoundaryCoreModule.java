@@ -73,10 +73,19 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
     }
 
     /**
-     * Reports whether strict route mode is enabled, that is whether the default registry refuses a route
-     * that declares no requirement.
+     * Reports whether the registry this module provides refuses, at registration, a route that declares no
+     * requirement. The answer is read from the registry, whichever way the module was built:
+     * <ul>
+     *   <li>{@code new ServiceBoundaryCoreModule()} and a builder that sets neither a registry nor
+     *       {@code strictRoutes}: {@code true};</li>
+     *   <li>a builder with {@code strictRoutes(false)} and no registry: {@code false};</li>
+     *   <li>a registry passed to the builder or to the two-argument constructor: {@code true} when it is a
+     *       {@link DefaultApiSurfaceRegistry} created strict, {@code false} when it was created lenient, and
+     *       {@code false} for any other implementation, whose route policy is not known here. A builder given
+     *       a registry ignores {@code strictRoutes(false)}, and refuses {@code strictRoutes(true)}.</li>
+     * </ul>
      *
-     * @return true if strict routes are enforced; false for a lenient default registry or a custom registry
+     * @return whether the registry in use refuses a route without a requirement, as described above
      */
     public boolean isStrictRoutes() {
         return registry instanceof DefaultApiSurfaceRegistry r && r.isStrictRoutes();

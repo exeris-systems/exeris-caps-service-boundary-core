@@ -33,6 +33,9 @@ the handler has no `AdmissionContext` and cannot change it.
   Equal tenants, or a host with no bound tenant, keep normal admission.
 - **Route requirements are enforced.** After the filters, the registry answers 401 when a route requires an
   authenticated principal and none was recorded, and 403 when the principal lacks a required scope.
+  Requirements are conjunctive. `RouteRequirement.permitAll()` is always met, so mixed with another
+  requirement it adds nothing: the other requirement is enforced and the route is not anonymous. Such a list is
+  non-empty, so it satisfies strict route mode.
 - **Strict routes by default.** A route must declare what it requires. The default registry, and so a
   `ServiceBoundaryCoreModule` built with `new ServiceBoundaryCoreModule()` or `ServiceBoundaryCoreModule.builder().build()`,
   refuses at registration, with `IllegalStateException`, a route whose requirement list is empty or `null`.
@@ -41,7 +44,9 @@ the handler has no `AdmissionContext` and cannot change it.
   `new DefaultApiSurfaceRegistry(false)`) turns the refusal off, and a route without a requirement is then
   served anonymously; it exists for compositions that have not declared their routes yet, and every route
   registered that way is open to all callers. Strict mode belongs to the default registry: `strictRoutes(true)`
-  combined with a custom registry is refused at `build()`.
+  combined with a custom registry is refused at `build()`. `ServiceBoundaryCoreModule.isStrictRoutes()` reads
+  the registry in use: `true` for a strict `DefaultApiSurfaceRegistry`, whether the module built it or was
+  handed it, and `false` for a lenient one and for any other `ApiSurfaceRegistry`, whose policy is not known.
 - **Registry phases.** The default registry moves one way: open, frozen, teardown.
   `ServiceBoundaryCoreModule.ready()` freezes it; while frozen the service is serving and all mutators
   (`registerRoute`, `unregisterRoute`, `registerFilter`, `unregisterFilter`, and `clear()`) throw
