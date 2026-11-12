@@ -32,11 +32,16 @@ the handler has no `AdmissionContext` and cannot change it.
   principal carries a different tenant, the request is refused with 403 (bare status, naming no tenant).
   Equal tenants, or a host with no bound tenant, keep normal admission.
 - **Route requirements are enforced.** After the filters, the registry answers 401 when a route requires an
-  authenticated principal and none was recorded, and 403 when the principal lacks a required scope. A route
-  with no requirement, or `RouteRequirement.permitAll()`, is served anonymously.
-- **Strict routes mode.** When enabled on `ServiceBoundaryCoreModule` (via `ServiceBoundaryCoreModule.builder().strictRoutes(true).build()`),
-  `registerRoute` refuses routes with an empty requirement list by throwing `IllegalStateException`. Routes
-  explicitly declared anonymous must use `RouteRequirement.permitAll()`. Non-strict mode preserves the default behaviour.
+  authenticated principal and none was recorded, and 403 when the principal lacks a required scope.
+- **Strict routes by default.** A route must declare what it requires. The default registry, and so a
+  `ServiceBoundaryCoreModule` built with `new ServiceBoundaryCoreModule()` or `ServiceBoundaryCoreModule.builder().build()`,
+  refuses at registration, with `IllegalStateException`, a route whose requirement list is empty or `null`.
+  A route that is meant to be anonymous says so with `RouteRequirement.permitAll()`, and is then served to a
+  request that no filter authenticated. `ServiceBoundaryCoreModule.builder().strictRoutes(false)` (or
+  `new DefaultApiSurfaceRegistry(false)`) turns the refusal off, and a route without a requirement is then
+  served anonymously; it exists for compositions that have not declared their routes yet, and every route
+  registered that way is open to all callers. Strict mode belongs to the default registry: `strictRoutes(true)`
+  combined with a custom registry is refused at `build()`.
 - **Registry phases.** The default registry moves one way: open, frozen, teardown.
   `ServiceBoundaryCoreModule.ready()` freezes it; while frozen the service is serving and all mutators
   (`registerRoute`, `unregisterRoute`, `registerFilter`, `unregisterFilter`, and `clear()`) throw

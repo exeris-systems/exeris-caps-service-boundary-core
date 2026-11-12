@@ -45,7 +45,8 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
     private final ServiceLifecycleHooks lifecycleHooks;
 
     /**
-     * Public no-arg constructor for reflective instantiation by the composition runtime.
+     * Public no-arg constructor for reflective instantiation by the composition runtime. The default
+     * registry is strict: a route that declares no requirement is refused at registration.
      */
     public ServiceBoundaryCoreModule() {
         this(new DefaultApiSurfaceRegistry(), new CompositeServiceLifecycleHooks());
@@ -72,9 +73,10 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
     }
 
     /**
-     * Reports whether strict route mode is enabled.
+     * Reports whether strict route mode is enabled, that is whether the default registry refuses a route
+     * that declares no requirement.
      *
-     * @return true if strict routes are enforced
+     * @return true if strict routes are enforced; false for a lenient default registry or a custom registry
      */
     public boolean isStrictRoutes() {
         return registry instanceof DefaultApiSurfaceRegistry r && r.isStrictRoutes();
@@ -138,7 +140,7 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
     public static final class Builder {
         private ApiSurfaceRegistry registry;
         private ServiceLifecycleHooks lifecycleHooks;
-        private boolean strictRoutes;
+        private Boolean strictRoutes;
 
         public Builder registry(ApiSurfaceRegistry registry) {
             this.registry = registry;
@@ -150,18 +152,34 @@ public final class ServiceBoundaryCoreModule implements CapabilityLifecycleHooks
             return this;
         }
 
+        /**
+         * Sets whether the default registry refuses, at registration, a route that declares no requirement.
+         * Strict is the default: a module built without this call is strict, and a route is declared
+         * anonymous with {@code RouteRequirement.permitAll()}.
+         *
+         * <p>{@code strictRoutes(false)} lets the registry accept a route with no requirement, or with a
+         * {@code null} list, and serve it to a request that no filter authenticated. It exists for
+         * compositions that have not declared their routes yet; a route registered that way is open to every
+         * caller until a requirement is declared.
+         *
+         * <p>Strict mode is a property of the default registry: setting it to {@code true} together with a
+         * custom {@link #registry(ApiSurfaceRegistry)} is refused by {@link #build()}.
+         *
+         * @param strictRoutes {@code true} to refuse routes without a requirement, {@code false} to accept them
+         * @return this builder
+         */
         public Builder strictRoutes(boolean strictRoutes) {
             this.strictRoutes = strictRoutes;
             return this;
         }
 
         public ServiceBoundaryCoreModule build() {
-            if (strictRoutes && this.registry != null) {
+            if (Boolean.TRUE.equals(strictRoutes) && this.registry != null) {
                 throw new IllegalStateException("Strict route mode is a property of the default registry and cannot be combined with a custom registry");
             }
             ApiSurfaceRegistry reg = this.registry != null
                     ? this.registry
-                    : new DefaultApiSurfaceRegistry(strictRoutes);
+                    : new DefaultApiSurfaceRegistry(strictRoutes == null || strictRoutes);
             ServiceLifecycleHooks hooks = this.lifecycleHooks != null
                     ? this.lifecycleHooks
                     : new CompositeServiceLifecycleHooks();

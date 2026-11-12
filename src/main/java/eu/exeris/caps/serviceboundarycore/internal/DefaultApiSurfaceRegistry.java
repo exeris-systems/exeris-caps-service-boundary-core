@@ -71,10 +71,17 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     private enum Phase { OPEN, FROZEN, TEARDOWN }
 
+    /** Creates a strict registry: a route that declares no requirement is refused at registration. */
     public DefaultApiSurfaceRegistry() {
-        this(false);
+        this(true);
     }
 
+    /**
+     * Creates a registry with the given route policy.
+     *
+     * @param strictRoutes {@code true} to refuse a route that declares no requirement at registration;
+     *                     {@code false} to accept it and serve it to a request that no filter authenticated
+     */
     public DefaultApiSurfaceRegistry(boolean strictRoutes) {
         this.strictRoutes = strictRoutes;
     }
