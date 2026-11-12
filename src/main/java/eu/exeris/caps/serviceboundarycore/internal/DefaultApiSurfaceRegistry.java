@@ -469,12 +469,20 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         return Optional.ofNullable(findMatch(method, path));
     }
 
-    /** The match for the request, or {@code null} when no route serves the method and path. */
+    /**
+     * The match for the request, or {@code null} when no route serves the method and path. The query string, if
+     * any, is not part of the path matched.
+     */
     private RouteMatch findMatch(HttpMethod method, String path) {
         if (method == null || path == null) {
             return null;
         }
-        String cleanPath = stripQueryString(path);
+        int query = path.indexOf('?');
+        int end = query >= 0 ? query : path.length();
+        // A route with path parameters is matched by a regular expression and extracts its values as substrings,
+        // so it needs the path as a String of its own; that string is cut only when such a route is reached.
+        // A route without parameters only compares, and compares the region in place.
+        String cleanPath = query >= 0 ? null : path;
 
         RegisteredRoute exactMatch = null;
         ApiSurfaceRoute parameterizedMatch = null;
@@ -482,12 +490,20 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
         for (RegisteredRoute entry : routeList) {
             ApiSurfaceRoute route = entry.route();
-            if (route.matchesMethod(method) && route.matchesPath(cleanPath)) {
-                if (entry.literalMatch() != null) {
+            if (!route.matchesMethod(method)) {
+                continue;
+            }
+            if (entry.literalMatch() != null) {
+                if (matchesLiteral(route.pathPattern(), path, end)) {
                     // Exact match takes precedence immediately
                     exactMatch = entry;
                     break;
-                } else if (parameterizedMatch == null) {
+                }
+            } else {
+                if (cleanPath == null) {
+                    cleanPath = path.substring(0, end);
+                }
+                if (route.matchesPath(cleanPath) && parameterizedMatch == null) {
                     parameterizedMatch = route;
                     extractedParams = route.extractPathParams(cleanPath);
                 }
@@ -501,6 +517,35 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             return new RouteMatch(parameterizedMatch, extractedParams != null ? extractedParams : Map.of());
         }
         return null;
+    }
+
+    /**
+     * Whether {@code path[0, end)} is, after normalisation, the pattern of a route without parameters. The
+     * normalisation is the one {@link ApiSurfaceRoute#matchesPath} applies: surrounding whitespace (every
+     * character up to a space) is trimmed, a leading slash is added when missing, and one trailing slash is
+     * dropped from a result longer than one character. The comparison is made on the region, so no substring
+     * is created. Any change to that normalisation must be made in both places.
+     */
+    private static boolean matchesLiteral(String pattern, String path, int end) {
+        int from = 0;
+        while (from < end && path.charAt(from) <= ' ') {
+            from++;
+        }
+        int to = end;
+        while (to > from && path.charAt(to - 1) <= ' ') {
+            to--;
+        }
+        boolean leadingSlash = to > from && path.charAt(from) == '/';
+        int length = (to - from) + (leadingSlash ? 0 : 1);
+        if (length > 1 && path.charAt(to - 1) == '/') {
+            length--;
+        }
+        if (pattern.length() != length) {
+            return false;
+        }
+        return leadingSlash
+                ? pattern.regionMatches(0, path, from, length)
+                : pattern.charAt(0) == '/' && pattern.regionMatches(1, path, from, length - 1);
     }
 
     @Override
@@ -535,10 +580,9 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             return;
         }
         String rawPath = exchange.request().path();
-        String cleanPath = stripQueryString(rawPath);
         HttpMethod method = exchange.request().method();
 
-        RouteMatch match = findMatch(method, cleanPath);
+        RouteMatch match = findMatch(method, rawPath);
         if (match != null) {
             MatchedHttpExchange effectiveExchange = new MatchedHttpExchange(exchange, match.pathParams());
             boolean handlerStarted = false;
@@ -577,6 +621,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         }
 
         // Check if path matches for any other HTTP method
+        String cleanPath = stripQueryString(rawPath);
         Set<String> allowedMethods = new LinkedHashSet<>();
         for (RegisteredRoute entry : routeList) {
             if (entry.route().matchesPath(cleanPath)) {
