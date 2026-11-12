@@ -23,13 +23,14 @@
         <url>https://exeris.eu</url>
     </organization>
 
-    <!-- commercial per ADR-023 — source-available under the Exeris Commercial License.
-         Production use requires an active Platform SKU subscription or Platform-tier license.
-         Source is public for audit, evaluation, and Code Detachment fork purposes. -->
+    <!-- Commercial capability (ADR-023), source-available under the Exeris Commercial License:
+         the source may be read, built and evaluated; production use requires an active Platform
+         SKU subscription or Platform-tier licence. The URL names the LICENSE file of this
+         repository, which is the licence text the jar is distributed under. -->
     <licenses>
         <license>
             <name>Exeris Commercial License</name>
-            <url>https://exeris.eu/licenses/commercial-1.1.txt</url>
+            <url>https://github.com/exeris-systems/exeris-caps-service-boundary-core/blob/main/LICENSE</url>
             <distribution>repo</distribution>
         </license>
     </licenses>
@@ -167,17 +168,14 @@
         Everything a release needs, and NOTHING the ordinary build touches. Activated only by
         `-P release`.
 
-        The isolation is not tidiness. central-publishing-maven-plugin declares
-        <extensions>true</extensions>, which makes it TAKE OVER the `deploy` phase. Declared outside
-        this profile it would own every `mvn deploy` this module runs, and the takeover is silent.
-
         Sources and javadoc jars are attached here rather than in the main build because only a
         release needs them, and a javadoc run is the slowest step of a build nobody publishes.
-        Central refuses a coordinate that lacks either, and so does the release workflow's
-        readiness gate.
+        The release workflow's readiness gate requires both, and a detached signature on every
+        file of the coordinate.
 
         The plugins are the ones the SDK and the kernel publish with, at the same versions, so one
-        release path serves all of them.
+        release path serves all of them. No deployment plugin is configured: the release workflow
+        uploads the files it gated, and the POM needs no distributionManagement for that.
     -->
     <profiles>
         <profile>
@@ -237,7 +235,7 @@
                     </plugin>
 
                     <!--
-                        Central verifies a detached GPG signature on every file it accepts: jar,
+                        A detached GPG signature is made for every file of the coordinate: jar,
                         sources, javadoc and pom. The passphrase arrives in the environment
                         variable MAVEN_GPG_PASSPHRASE, which is the plugin's default name, so no
                         passphrase or key id is configured here. `-Dgpg.skip=true` is the only way
@@ -256,26 +254,6 @@
                                 </goals>
                             </execution>
                         </executions>
-                    </plugin>
-
-                    <!--
-                        autoPublish=false: an upload becomes a deployment that a person still has
-                        to Publish in the portal, and an unpublished deployment can be dropped
-                        where a published one cannot be touched. waitUntil=validated makes the
-                        build block until Central has validated, so a missing sources jar, javadoc
-                        jar or signature fails the build instead of sitting in the portal.
-                        skipUpload builds the bundle without sending it.
-                    -->
-                    <plugin>
-                        <groupId>org.sonatype.central</groupId>
-                        <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.12.0</version>
-                        <extensions>true</extensions>
-                        <configuration>
-                            <publishingServerId>central</publishingServerId>
-                            <autoPublish>false</autoPublish>
-                            <waitUntil>validated</waitUntil>
-                        </configuration>
                     </plugin>
                 </plugins>
             </build>
