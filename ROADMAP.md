@@ -4,7 +4,7 @@ type: roadmap
 visibility: public
 owning-repo: exeris-caps-service-boundary-core
 status: active
-last-verified: 2026-10-15
+last-verified: 2026-11-12
 ---
 
 # exeris-caps-service-boundary-core — Roadmap
@@ -36,24 +36,6 @@ matched route and never seals the admission context; only `ApiSurfaceRegistry.ha
 (`internal/DefaultApiSurfaceRegistry.java`, `execute` and `handle`). A host that drives the chain directly, as
 the gateway `policy-chain` host would, gets filters without the 401 and 403 answers. This waits on the rule for
 that host: either `execute` returns the denial, or the requirement check moves into a shared step.
-
-### A filter or handler that does not answer leaves the exchange open
-
-When a filter returns `false` without responding, `handle()` returns without answering (`admit` and `handle` in
-`internal/DefaultApiSurfaceRegistry.java`), and a handler that returns without responding is not answered
-either. A filter that throws an `Exception` is answered 500, but an `Error` propagates out of `handle()`
-unanswered. The request is never served, so nothing is admitted by mistake, but the caller waits. Whether the
-kernel completes an unanswered exchange has not been verified here. A default 500 after an unanswered `false`
-would make the contract independent of that.
-
-### A route without requirements is served anonymously by default
-
-A route built with no requirements, or with `null`, declares nothing and is served to a request that no filter
-authenticated (`api/ApiSurfaceRoute.java`, constructor; README, "Route requirements are enforced"). A
-composition can already make a forgotten requirement fail closed: `ServiceBoundaryCoreModule.builder()
-.strictRoutes(true)` refuses such a route at registration, and `RouteRequirement.permitAll()` declares an
-anonymous one. Strict mode is opt-in. Making it the default changes every consumer's routes, so it waits on a
-decision before any consumer depends on the current default.
 
 ### Unmatched requests skip admission
 
