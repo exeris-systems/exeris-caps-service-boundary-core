@@ -159,6 +159,11 @@ public final class ApiSurfaceRoute {
         return Collections.unmodifiableMap(params);
     }
 
+    /**
+     * Trims whitespace, adds a leading slash and drops one trailing slash from a result longer than one
+     * character. {@code DefaultApiSurfaceRegistry} applies the same rule to a region of the request path when it
+     * matches a route without parameters, so a change here must be made there too.
+     */
     private static String normalizePath(String path) {
         String trimmed = path.trim();
         if (!trimmed.startsWith("/")) {

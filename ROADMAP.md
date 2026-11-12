@@ -23,37 +23,54 @@ No item.
 
 ### The admission path allocates on every request
 
-The organisation's rule is that a request path does not allocate, and the admission path of `handle()` does,
-for a route with no filter and no path parameter as for any other. An allocation test in this repository, built
-on the kernel TCK's allocation monitor, measures a steady non-zero allocation per `handle()` call for an
-anonymous route, and it pins that strict mode adds none; it does not pin the total. Reading the code, the
-sites on the success path are the following, in `internal/` unless stated.
+The organisation's rule is that a request path does not allocate, and the admission path of `handle()` still
+does. An allocation test in this repository, built on the kernel TCK's allocation monitor, measures a steady
+non-zero allocation per `handle()` call for an anonymous route, and it pins that strict mode adds none; it does
+not pin the total.
 
-- `DefaultApiSurfaceRegistry.handle`: a `MatchedHttpExchange` per request, and the `Optional` and `RouteMatch`
-  returned by `matchRoute`.
-- `DefaultApiSurfaceRegistry.matchRoute`: an iterator over the copy-on-write route list; for a parameterised
-  route, the `LinkedHashMap`, the `Matcher` and the captured substrings of `ApiSurfaceRoute.extractPathParams`,
-  then the copies made by the `RouteMatch` and `MatchedHttpExchange` constructors (`Map.copyOf`).
-- `api/ApiSurfaceRoute.matchesPath` and `normalizePath`: a `Matcher` for each parameterised route scanned, and
-  a new string when the path has a trailing slash or no leading one.
-- `DefaultApiSurfaceRegistry.stripQueryString`: a substring when the path carries a query string.
-- `DefaultApiSurfaceRegistry.admit` and `filters()`: an `ArrayList` copy of the filters, a sort, and an
-  unmodifiable wrapper, on every request; the iteration over them; and, for each filter, two lambdas capturing
-  the filter, the exchange and the route match.
-- `DefaultAdmissionContext.open`: the admission context with its `LinkedHashMap`, and, when the host bound no
-  `RequestContext`, a builder, a context and a `UUID.randomUUID().toString()` correlation id.
-- `DefaultAdmissionContext.requestContext`: a new builder, `LinkedHashMap` and `DefaultRequestContext` on each
-  call, which `admit` makes for each filter and `handle` makes once more before the handler.
-- `DefaultAdmissionContext.callWith`, `DefaultRequestContext.bind`: a `ScopedValue` carrier per binding, two
-  per filter and one for the handler.
-- `DefaultApiSurfaceRegistry.runHandler`: a lambda capturing the route match and the exchange.
-- `DefaultApiSurfaceRegistry.unmet`: an iterator over the route's requirements.
+A literal route pays nothing only when it is registered before the parameterised routes. The match walks the routes
+in registration order, and every parameterised route of the same HTTP method scanned before the match runs its
+pattern, so a literal route registered after parameterised routes of its method pays for scanning each of them; one registered before them stops the
+walk first.
 
-Those named from the code read are the call sites above; the allocation that each `ScopedValue` binding,
-iterator and lambda performs after the JIT's escape analysis is not measured per site. Closing the gap needs
-the route index to hand out a preallocated match and path-parameter holder, the filter order computed once at
-freeze and read without a copy, a request context built once and updated in place or lent to the handler, and
-a binding that captures no per-request state, each pinned by the allocation test with a total of zero.
+Removed already, for a route with no path parameter: the per-request copy and sort of the filters (the registry
+keeps one pre-sorted array and reads it once per request), the `RouteMatch` and `Optional` (the match is built
+at registration), the attribute map of the admission context (allocated on the first write), the request
+context rebuilt on every `requestContext()` call (built once per change of admission state, and without a
+builder), the seed context and the correlation id generated for every request (the id is generated when
+something first reads it, and is still `UUID.randomUUID()`), the iterator over a route's requirements, and the
+substring made for a query string or a trailing slash.
+
+What a request for such a route still allocates, in `internal/`:
+
+- `DefaultAdmissionContext`, one per matched request, and a `DefaultRequestContext` for each change of admission
+  state: at least one, because the handler runs in it, and another for each filter that runs after an earlier filter
+  changed the state. Closing this needs a request context built once and updated in place or lent to
+  the handler, which changes what a filter may keep of it.
+- `MatchedHttpExchange`, one per matched request, which carries the path parameters and the answered state.
+- The `ScopedValue` binding of each call: a carrier and a snapshot allocated by the JDK for every
+  `ScopedValue.where(...).call(...)`. `admit` makes two bindings per filter (the admission context, then the
+  request context) and `runHandler` makes one. The JDK allocates these and this repository cannot remove them
+  while it binds; it can bind less, by binding once around the whole filter chain, which needs the filters to
+  read the current context from something other than a per-filter binding.
+- The two lambdas that `admit` creates per filter, and the one in `runHandler`. The JIT removes them in some
+  compiled shapes and keeps them in others, so their cost varies from one JVM to the next.
+- A correlation id costs a `SecureRandom` draw, a `UUID` and its string at the first read, by design: the id
+  stays unpredictable.
+
+A route with path parameters allocates more. `ApiSurfaceRoute.matchesPath` and `extractPathParams` run a regular
+expression and make a `Matcher` for each parameterised route scanned, the `LinkedHashMap` and the captured
+substrings of the extraction, and the copies of that map made by the `RouteMatch` and `MatchedHttpExchange`
+constructors; each parameterised route of the same HTTP method scanned before the match costs again, so the cost grows with the number
+of routes. Closing this needs matching that does not use a regular expression, an index from the path to the
+route, and a path-parameter holder that is lent rather than copied. The 404 and 405 answers allocate too: both
+build the set of allowed methods, and may cut a substring (when the request path has a query string) and run the
+pattern of each parameterised route of any method, because the walk tests every route, literal ones included; a 405 also builds the `Allow` value and the header list. Which of these
+the JIT removes varies, so this page does not count them.
+
+None of the remaining items has an allocation figure in this page; the allocation test is to be extended to pin
+a total per scenario once the remaining sites are decided, with the `ScopedValue` bindings counted as the
+floor the JDK imposes.
 
 ### A composition that skips the boundary's drain leaves attached filters in place
 
@@ -96,7 +113,7 @@ capability in front of the boundary, and the `HEAD` rule is a design choice that
 ### Parameterised routes match in registration order
 
 When several parameterised routes match one path, the first registered wins, not the one with the most literal
-segments (`matchRoute` in `internal/DefaultApiSurfaceRegistry.java`). Two routes of different shape, such as
+segments (`findMatch`, behind `matchRoute`, in `internal/DefaultApiSurfaceRegistry.java`). Two routes of different shape, such as
 `/a/{id}/x` and `/a/{name}/{rest}`, therefore resolve by registration order. Registration refuses only routes of
 identical shape. The lookup is also a linear scan of all routes, which is acceptable for a proof of concept and
 not for a large surface. A specificity rule and an indexed lookup wait on the first consumer with a route set of

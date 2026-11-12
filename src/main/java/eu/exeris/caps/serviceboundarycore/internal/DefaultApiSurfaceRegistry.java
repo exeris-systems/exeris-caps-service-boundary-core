@@ -1,6 +1,7 @@
 package eu.exeris.caps.serviceboundarycore.internal;
 
 import eu.exeris.caps.serviceboundarycore.api.AdmissionFilter;
+import eu.exeris.caps.serviceboundarycore.api.AdmissionPhase;
 import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRegistry;
 import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRoute;
 import eu.exeris.caps.serviceboundarycore.api.RequestContext;
@@ -17,6 +18,7 @@ import eu.exeris.kernel.spi.http.HttpStatus;
 import eu.exeris.kernel.spi.http.HttpVersion;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -72,9 +74,52 @@ import java.util.regex.Pattern;
  * can detach, and addition stays refused. Every mutator and every phase transition runs under one lock, so a
  * mutation either happens before a transition or observes it; the request path never takes that lock.
  *
- * <p>A request reads the filter snapshot before it reads the phase, and a removal is permitted only after the
- * {@code TEARDOWN} write it observed under the lock. A request that does not observe {@code TEARDOWN} therefore
- * read its snapshot before any removal, and runs every filter that was registered when serving ended.
+ * <p><b>Invariant: the ordered filters are read once per request, before the phase.</b> The filters a request
+ * runs are one immutable array, already sorted by phase and then name, held in the volatile field
+ * {@code orderedFilters}. Every mutator ({@code registerFilter}, {@code unregisterFilter}, {@code clear}) builds a
+ * new array and replaces the field with one volatile write, still inside {@code mutationLock}; no array is
+ * ever modified after it is published. A request reads the field once, and only afterwards reads {@code phase};
+ * it never reads the field again, so the whole request runs against one array.
+ *
+ * <p>Removal is permitted while {@code OPEN}, before serving begins, and in {@code TEARDOWN}, after it ended;
+ * never while {@code FROZEN}. A removal in {@code TEARDOWN} runs only after the mutator, holding the lock,
+ * observed {@code phase} at {@code TEARDOWN}, a value written under the same lock, so its write of
+ * {@code orderedFilters} follows the {@code TEARDOWN} write in the synchronisation order. Suppose a request's
+ * read of {@code orderedFilters} returned an array written by such a removal. That read synchronises with the
+ * write, so the {@code TEARDOWN} write happens before the request's later read of {@code phase}, and since no
+ * write follows {@code TEARDOWN} that read returns {@code TEARDOWN}. Read the other way round: a request that
+ * does not observe {@code TEARDOWN} read an array that predates every removal made during {@code TEARDOWN}, and
+ * runs every filter that was registered when serving ended. A request that does observe {@code TEARDOWN}
+ * answers 503 and runs none, so whichever array it holds is not used. No request can therefore pair an array
+ * with a phase that contradicts it. Additions are refused once the phase left {@code OPEN}, so while
+ * {@code FROZEN} the field holds one array. An array is complete when read, because its elements are written
+ * before the volatile write that publishes it.
+ *
+ * <p>The sort key is the phase and name a filter reported when it was registered. Both are read exactly once,
+ * inside {@code registerFilter} before anything is changed, and kept in an immutable {@code RegisteredFilter};
+ * sorting, the duplicate-name check and the record written for the registration use those captured values; the
+ * other log records name the filter's class. {@code name()} and {@code phase()} are never called on a
+ * registered filter again, so a filter that later
+ * reports another name or phase keeps its place and its name. The order is not recomputed per request, and a
+ * rebuild sorts the captured values, not the filters. {@code registerFilter} validates everything and builds the
+ * new array before it changes the list or replaces {@code orderedFilters}, so a registration that throws, at any
+ * point, leaves both as they were. {@link #filters()} returns a fresh unmodifiable list of that order and
+ * exposes no live state.
+ *
+ * <p><b>A change that has been made is not undone by a failure to log it.</b> Every mutator
+ * ({@code registerFilter}, {@code unregisterFilter}, {@code registerRoute}, {@code unregisterRoute},
+ * {@code clear}, {@code freeze}, {@code beginTeardown}) either throws and leaves the registry as it was, or
+ * commits and returns normally. A log record is written after the lock is released and after the commit; a
+ * failure to write it is diagnostics lost and is swallowed (a {@link VirtualMachineError} is not), and nothing
+ * else runs between the commit and the return. No code supplied by a caller runs under {@code mutationLock}: a
+ * filter is identified by reference ({@code ==}), so {@code equals}, {@code hashCode} and {@code toString} of a
+ * filter are never called by the registry, and a filter is removed by passing the same instance that was
+ * registered. A route is removed when it equals the given one, which compares its method, path pattern and
+ * action name (library types only), and its handler is the same instance.
+ *
+ * <p>Only {@code registerFilter} and {@code registerRoute} write a record; the other mutators write none. A
+ * {@link VirtualMachineError} raised while such a record is written is the one case in which a mutator throws
+ * after it has committed: the error propagates and the change stands.
  *
  * @since 0.1.0
  */
@@ -84,12 +129,34 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     private static final Pattern PARAM_SEGMENT = Pattern.compile("\\{[a-zA-Z0-9_]+\\}");
 
-    private static final Comparator<AdmissionFilter> FILTER_COMPARATOR = Comparator
-            .comparing(AdmissionFilter::phase)
-            .thenComparing(AdmissionFilter::name);
+    private static final AdmissionFilter[] NO_FILTERS = new AdmissionFilter[0];
 
-    private final List<ApiSurfaceRoute> routeList = new CopyOnWriteArrayList<>();
-    private final List<AdmissionFilter> filterList = new CopyOnWriteArrayList<>();
+    private static final Comparator<RegisteredFilter> FILTER_COMPARATOR = Comparator
+            .comparing(RegisteredFilter::phase)
+            .thenComparing(RegisteredFilter::name);
+
+    /** A filter with the name and phase it reported when it was registered; immutable, so it never drifts. */
+    private record RegisteredFilter(AdmissionFilter filter, String name, AdmissionPhase phase) {
+    }
+
+    /**
+     * A registered route together with the match it always produces, when it has one: a route without path
+     * parameters matches every request with the same route and no parameters, so that match is built once at
+     * registration. A {@link RouteMatch} is an immutable record of an immutable route and an immutable, empty
+     * parameter map, holds no per-request state and is compared by value, so sharing one instance between
+     * requests and threads is indistinguishable from building one per request.
+     */
+    private record RegisteredRoute(ApiSurfaceRoute route, RouteMatch literalMatch) {
+        static RegisteredRoute of(ApiSurfaceRoute route) {
+            return new RegisteredRoute(route, route.paramNames().isEmpty() ? new RouteMatch(route, Map.of()) : null);
+        }
+    }
+
+    private final List<RegisteredRoute> routeList = new CopyOnWriteArrayList<>();
+    /** The registered filters in registration order; read and written only while holding {@code mutationLock}. */
+    private final List<RegisteredFilter> filterList = new ArrayList<>();
+    /** The filters sorted by phase and then name; replaced as a whole under {@code mutationLock}, never modified. */
+    private volatile AdmissionFilter[] orderedFilters = NO_FILTERS;
     private volatile boolean strictRoutes;
     private final Object mutationLock = new Object();
     private volatile Phase phase = Phase.OPEN;
@@ -171,16 +238,32 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                 throw new IllegalStateException("Strict route mode: route " + route.method() + " "
                         + route.pathPattern() + " declared no requirements");
             }
-            for (ApiSurfaceRoute existing : routeList) {
+            for (RegisteredRoute entry : routeList) {
+                ApiSurfaceRoute existing = entry.route();
                 if (existing.method() == route.method()
                         && shape(existing.pathPattern()).equals(shape(route.pathPattern()))) {
                     throw new IllegalStateException("A route is already registered for " + route.method()
                             + " " + route.pathPattern());
                 }
             }
-            routeList.add(route);
+            routeList.add(RegisteredRoute.of(route));
         }
-        LOG.log(System.Logger.Level.DEBUG, "Registered boundary route: {0}", route);
+        diagnostic(System.Logger.Level.DEBUG, "Registered boundary route: {0}", route);
+    }
+
+    /**
+     * Writes a record after a mutation has been committed. The record is diagnostics: a handler or formatter
+     * that fails must not make a call throw when the registry has already changed, so the failure is swallowed.
+     * A {@link VirtualMachineError} is not.
+     */
+    private static void diagnostic(System.Logger.Level level, String format, Object... arguments) {
+        try {
+            LOG.log(level, format, arguments);
+        } catch (VirtualMachineError err) {
+            throw err;
+        } catch (Throwable ignored) {
+            // diagnostics only; the registry has already changed
+        }
     }
 
     @Override
@@ -188,7 +271,8 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         Objects.requireNonNull(route, "route");
         synchronized (mutationLock) {
             checkRemovalAllowed();
-            return routeList.removeIf(existing -> existing.equals(route) && existing.handler() == route.handler());
+            return routeList.removeIf(entry -> entry.route().equals(route)
+                    && entry.route().handler() == route.handler());
         }
     }
 
@@ -196,22 +280,31 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     public void registerFilter(AdmissionFilter filter) {
         Objects.requireNonNull(filter, "filter");
         String name = filter.name();
+        AdmissionPhase filterPhase = filter.phase();
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("An admission filter needs a non-blank name");
         }
-        if (filter.phase() == null) {
+        if (filterPhase == null) {
             throw new IllegalArgumentException("Admission filter " + name + " needs a phase");
         }
+        RegisteredFilter registered = new RegisteredFilter(filter, name, filterPhase);
         synchronized (mutationLock) {
             checkAdditionAllowed();
-            for (AdmissionFilter existing : filterList) {
+            for (RegisteredFilter existing : filterList) {
+                if (existing.filter() == filter) {
+                    throw new IllegalStateException("Admission filter " + name + " is already registered");
+                }
                 if (name.equals(existing.name())) {
                     throw new IllegalStateException("An admission filter named " + name + " is already registered");
                 }
             }
-            filterList.add(filter);
+            RegisteredFilter[] candidates = filterList.toArray(new RegisteredFilter[filterList.size() + 1]);
+            candidates[candidates.length - 1] = registered;
+            AdmissionFilter[] sorted = sortedFilters(candidates);
+            filterList.add(registered);
+            orderedFilters = sorted;
         }
-        LOG.log(System.Logger.Level.DEBUG, "Registered admission filter: {0} ({1})", filter.name(), filter.phase());
+        diagnostic(System.Logger.Level.DEBUG, "Registered admission filter: {0} ({1})", name, filterPhase);
     }
 
     @Override
@@ -219,15 +312,36 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         Objects.requireNonNull(filter, "filter");
         synchronized (mutationLock) {
             checkRemovalAllowed();
-            return filterList.remove(filter);
+            for (int i = 0; i < filterList.size(); i++) {
+                if (filterList.get(i).filter() == filter) {
+                    RegisteredFilter[] remaining = new RegisteredFilter[filterList.size() - 1];
+                    for (int k = 0, j = 0; k < filterList.size(); k++) {
+                        if (k != i) {
+                            remaining[j++] = filterList.get(k);
+                        }
+                    }
+                    orderedFilters = sortedFilters(remaining);
+                    filterList.remove(i);
+                    return true;
+                }
+            }
+            return false;
         }
+    }
+
+    /** Sorts the captured name and phase, never the live filters, and returns the filters in that order. */
+    private static AdmissionFilter[] sortedFilters(RegisteredFilter[] registered) {
+        Arrays.sort(registered, FILTER_COMPARATOR);
+        AdmissionFilter[] sorted = new AdmissionFilter[registered.length];
+        for (int i = 0; i < registered.length; i++) {
+            sorted[i] = registered[i].filter();
+        }
+        return sorted;
     }
 
     @Override
     public List<AdmissionFilter> filters() {
-        List<AdmissionFilter> copy = new ArrayList<>(filterList);
-        copy.sort(FILTER_COMPARATOR);
-        return Collections.unmodifiableList(copy);
+        return Collections.unmodifiableList(new ArrayList<>(Arrays.asList(orderedFilters)));
     }
 
     @Override
@@ -247,16 +361,17 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         MatchedHttpExchange tracked = exchange instanceof MatchedHttpExchange matched
                 ? matched
                 : new MatchedHttpExchange(exchange, exchange.pathParams());
-        // The snapshot is taken before the phase is read: a removal is permitted only after teardown was
-        // written, so a request that does not see teardown holds a snapshot that predates every removal.
-        List<AdmissionFilter> orderedFilters = filters();
+        // The array is read before the phase and not again: a removal is permitted only after teardown was
+        // written, so a request that does not see teardown holds an array that predates every removal.
+        AdmissionFilter[] ordered = orderedFilters;
         if (phase == Phase.TEARDOWN) {
             if (!tracked.responded()) {
                 answer(tracked, HttpStatus.SERVICE_UNAVAILABLE, null, "registry is tearing down", routeMatch, null);
             }
             return false;
         }
-        for (AdmissionFilter filter : orderedFilters) {
+        for (int i = 0; i < ordered.length; i++) {
+            AdmissionFilter filter = ordered[i];
             try {
                 boolean proceed = DefaultAdmissionContext.callWith(admission,
                         () -> DefaultRequestContext.bind(admission.requestContext(),
@@ -275,7 +390,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                                 "Admission filter {0} answered route {1} and returned true; admission ends",
                                 filter.getClass().getName(), routeMatch.route().pathPattern());
                     } else {
-                        LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.name());
+                        LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.getClass().getName());
                     }
                     return false;
                 }
@@ -287,7 +402,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                     return false;
                 }
             } catch (TenantConflictException ex) {
-                LOG.log(System.Logger.Level.DEBUG, "Tenant conflict in admission filter {0}", filter.name());
+                LOG.log(System.Logger.Level.DEBUG, "Tenant conflict in admission filter {0}", filter.getClass().getName());
                 if (!tracked.responded()) {
                     answer(tracked, HttpStatus.FORBIDDEN, null, "tenant conflict", routeMatch, null);
                 }
@@ -414,22 +529,44 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     @Override
     public Optional<RouteMatch> matchRoute(HttpMethod method, String path) {
-        if (method == null || path == null) {
-            return Optional.empty();
-        }
-        String cleanPath = stripQueryString(path);
+        return Optional.ofNullable(findMatch(method, path));
+    }
 
-        ApiSurfaceRoute exactMatch = null;
+    /**
+     * The match for the request, or {@code null} when no route serves the method and path. The query string, if
+     * any, is not part of the path matched.
+     */
+    private RouteMatch findMatch(HttpMethod method, String path) {
+        if (method == null || path == null) {
+            return null;
+        }
+        int query = path.indexOf('?');
+        int end = query >= 0 ? query : path.length();
+        // A route with path parameters is matched by a regular expression and extracts its values as substrings,
+        // so it needs the path as a String of its own; that string is cut only when such a route is reached.
+        // A route without parameters only compares, and compares the region in place.
+        String cleanPath = query >= 0 ? null : path;
+
+        RegisteredRoute exactMatch = null;
         ApiSurfaceRoute parameterizedMatch = null;
         Map<String, String> extractedParams = null;
 
-        for (ApiSurfaceRoute route : routeList) {
-            if (route.matchesMethod(method) && route.matchesPath(cleanPath)) {
-                if (route.paramNames().isEmpty()) {
+        for (RegisteredRoute entry : routeList) {
+            ApiSurfaceRoute route = entry.route();
+            if (!route.matchesMethod(method)) {
+                continue;
+            }
+            if (entry.literalMatch() != null) {
+                if (matchesLiteral(route.pathPattern(), path, end)) {
                     // Exact match takes precedence immediately
-                    exactMatch = route;
+                    exactMatch = entry;
                     break;
-                } else if (parameterizedMatch == null) {
+                }
+            } else {
+                if (cleanPath == null) {
+                    cleanPath = path.substring(0, end);
+                }
+                if (route.matchesPath(cleanPath) && parameterizedMatch == null) {
                     parameterizedMatch = route;
                     extractedParams = route.extractPathParams(cleanPath);
                 }
@@ -437,18 +574,50 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         }
 
         if (exactMatch != null) {
-            return Optional.of(new RouteMatch(exactMatch, Map.of()));
+            return exactMatch.literalMatch();
         }
         if (parameterizedMatch != null) {
-            return Optional.of(new RouteMatch(parameterizedMatch, extractedParams != null ? extractedParams : Map.of()));
+            return new RouteMatch(parameterizedMatch, extractedParams != null ? extractedParams : Map.of());
         }
+        return null;
+    }
 
-        return Optional.empty();
+    /**
+     * Whether {@code path[0, end)} is, after normalisation, the pattern of a route without parameters. The
+     * normalisation is the one {@link ApiSurfaceRoute#matchesPath} applies: surrounding whitespace (every
+     * character up to a space) is trimmed, a leading slash is added when missing, and one trailing slash is
+     * dropped from a result longer than one character. The comparison is made on the region, so no substring
+     * is created. Any change to that normalisation must be made in both places.
+     */
+    private static boolean matchesLiteral(String pattern, String path, int end) {
+        int from = 0;
+        while (from < end && path.charAt(from) <= ' ') {
+            from++;
+        }
+        int to = end;
+        while (to > from && path.charAt(to - 1) <= ' ') {
+            to--;
+        }
+        boolean leadingSlash = to > from && path.charAt(from) == '/';
+        int length = (to - from) + (leadingSlash ? 0 : 1);
+        if (length > 1 && path.charAt(to - 1) == '/') {
+            length--;
+        }
+        if (pattern.length() != length) {
+            return false;
+        }
+        return leadingSlash
+                ? pattern.regionMatches(0, path, from, length)
+                : pattern.charAt(0) == '/' && pattern.regionMatches(1, path, from, length - 1);
     }
 
     @Override
     public List<ApiSurfaceRoute> routes() {
-        return Collections.unmodifiableList(new ArrayList<>(routeList));
+        List<ApiSurfaceRoute> routes = new ArrayList<>(routeList.size());
+        for (RegisteredRoute entry : routeList) {
+            routes.add(entry.route());
+        }
+        return Collections.unmodifiableList(routes);
     }
 
     @Override
@@ -462,6 +631,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             checkRemovalAllowed();
             routeList.clear();
             filterList.clear();
+            orderedFilters = NO_FILTERS;
         }
     }
 
@@ -473,12 +643,10 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             return;
         }
         String rawPath = exchange.request().path();
-        String cleanPath = stripQueryString(rawPath);
         HttpMethod method = exchange.request().method();
 
-        Optional<RouteMatch> matchOpt = matchRoute(method, cleanPath);
-        if (matchOpt.isPresent()) {
-            RouteMatch match = matchOpt.get();
+        RouteMatch match = findMatch(method, rawPath);
+        if (match != null) {
             MatchedHttpExchange effectiveExchange = new MatchedHttpExchange(exchange, match.pathParams());
             boolean handlerStarted = false;
             try {
@@ -516,10 +684,11 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         }
 
         // Check if path matches for any other HTTP method
+        String cleanPath = stripQueryString(rawPath);
         Set<String> allowedMethods = new LinkedHashSet<>();
-        for (ApiSurfaceRoute route : routeList) {
-            if (route.matchesPath(cleanPath)) {
-                allowedMethods.add(route.method().name());
+        for (RegisteredRoute entry : routeList) {
+            if (entry.route().matchesPath(cleanPath)) {
+                allowedMethods.add(entry.route().method().name());
             }
         }
 
@@ -542,7 +711,9 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
      */
     private static HttpStatus unmet(ApiSurfaceRoute route, RequestContext admitted) {
         PrincipalContext principal = admitted.principal().orElse(null);
-        for (RouteRequirement requirement : route.requirements()) {
+        List<RouteRequirement> requirements = route.requirements();
+        for (int i = 0, count = requirements.size(); i < count; i++) {
+            RouteRequirement requirement = requirements.get(i);
             // An exhaustive switch expression: a requirement kind added to the SPI is a compile error here
             // (and a MatchException, answered 500, against a newer SPI), never a requirement that is skipped.
             HttpStatus denial = switch (requirement.kind()) {

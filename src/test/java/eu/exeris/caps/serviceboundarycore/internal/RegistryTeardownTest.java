@@ -373,58 +373,95 @@ class RegistryTeardownTest {
         }
 
         @Test
-        @DisplayName("a registration holding the mutation lock completes before a concurrent freeze returns")
-        void registrationCompletesBeforeFreezeReturns() throws Exception {
-            DefaultApiSurfaceRegistry reg = new DefaultApiSurfaceRegistry();
-            CountDownLatch insideCheck = new CountDownLatch(1);
-            CountDownLatch release = new CountDownLatch(1);
-            // registerFilter compares the new name with each existing name while the registration is in
-            // progress; blocking there holds the registration open at a call the class already makes.
-            AtomicBoolean blockNext = new AtomicBoolean();
-            AdmissionFilter existing = new AdmissionFilter() {
-                @Override public String name() {
-                    if (blockNext.get()) {
-                        insideCheck.countDown();
-                        await(release);
-                    }
-                    return "existing";
-                }
-                @Override public AdmissionPhase phase() { return AdmissionPhase.PRE_ADMISSION; }
-                @Override public boolean filter(HttpExchange e, RouteMatch m) { return true; }
-            };
-            reg.registerFilter(existing);
-            blockNext.set(true);
-            CountingFilter late = new CountingFilter("late");
+        @DisplayName("a filter removal racing with freeze: removed means gone from the frozen set and from what requests run, refused means present in both (stress)")
+        void filterRemovalRacingWithFreezeIsAtomicToRequests() throws Exception {
+            raceAgainstFreeze(Race.UNREGISTER_FILTER, 1000);
+        }
 
-            ExecutorService pool = Executors.newFixedThreadPool(2);
+        @Test
+        @DisplayName("a route registration racing with freeze: registered means in the frozen set and served, refused means in neither (stress)")
+        void routeRegistrationRacingWithFreezeIsAtomicToRequests() throws Exception {
+            raceAgainstFreeze(Race.REGISTER_ROUTE, 1000);
+        }
+
+        @Test
+        @DisplayName("a route removal racing with freeze: removed means gone from the frozen set and answered 404, refused means present and answered 200 (stress)")
+        void routeRemovalRacingWithFreezeIsAtomicToRequests() throws Exception {
+            raceAgainstFreeze(Race.UNREGISTER_ROUTE, 1000);
+        }
+
+        @Test
+        @DisplayName("a registration racing with freeze: accepted means in the frozen set and run by requests, refused means in neither (stress)")
+        void registrationRacingWithFreezeIsAtomicToRequests() throws Exception {
+            ExecutorService pool = Executors.newFixedThreadPool(3);
             try {
-                Future<?> registering = pool.submit(() -> reg.registerFilter(late));
-                assertThat(insideCheck.await(10, TimeUnit.SECONDS)).isTrue();
+                for (int i = 0; i < 1000; i++) {
+                    DefaultApiSurfaceRegistry reg = new DefaultApiSurfaceRegistry();
+                    reg.registerRoute(route("/things", HttpMethod.GET));
+                    List<String> trace = java.util.Collections.synchronizedList(new ArrayList<>());
+                    TracingFilter base = new TracingFilter("a-base", trace);
+                    TracingFilter racer = new TracingFilter("b-racer", trace);
+                    reg.registerFilter(base);
+                    CyclicBarrier barrier = new CyclicBarrier(3);
+                    AtomicBoolean accepted = new AtomicBoolean();
+                    AtomicBoolean refusedAsFrozen = new AtomicBoolean();
+                    AtomicInteger sizeAtFreeze = new AtomicInteger(-1);
+                    List<List<AdmissionFilter>> reported = java.util.Collections.synchronizedList(new ArrayList<>());
+                    List<List<String>> ranDuringRace = java.util.Collections.synchronizedList(new ArrayList<>());
+                    Future<?> registering = pool.submit(() -> {
+                        await(barrier);
+                        try {
+                            reg.registerFilter(racer);
+                            accepted.set(true);
+                        } catch (IllegalStateException expected) {
+                            refusedAsFrozen.set(FROZEN_MESSAGE.equals(expected.getMessage()));
+                        }
+                    });
+                    Future<?> freezing = pool.submit(() -> {
+                        await(barrier);
+                        reg.freeze();
+                        sizeAtFreeze.set(reg.filters().size());
+                    });
+                    Future<?> requesting = pool.submit(() -> {
+                        await(barrier);
+                        for (int k = 0; k < 3; k++) {
+                            List<AdmissionFilter> before = reg.filters();
+                            trace.clear();
+                            reg.handle(get("/things"));
+                            ranDuringRace.add(List.copyOf(trace));
+                            reported.add(before);
+                        }
+                    });
+                    registering.get(10, TimeUnit.SECONDS);
+                    freezing.get(10, TimeUnit.SECONDS);
+                    requesting.get(10, TimeUnit.SECONDS);
 
-                AtomicInteger sizeWhenFrozen = new AtomicInteger(-1);
-                Thread freezer = new Thread(() -> {
-                    reg.freeze();
-                    sizeWhenFrozen.set(reg.filters().size());
-                });
-                freezer.start();
-                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-                while (freezer.getState() == Thread.State.RUNNABLE || freezer.getState() == Thread.State.NEW) {
-                    assertThat(System.nanoTime()).isLessThan(deadline);
-                    Thread.onSpinWait();
+                    List<AdmissionFilter> finalSet = reg.filters();
+                    trace.clear();
+                    reg.handle(get("/things"));
+                    List<String> ranAfter = List.copyOf(trace);
+                    if (accepted.get()) {
+                        assertThat(refusedAsFrozen.get()).isFalse();
+                        assertThat(finalSet).as("round %d: accepted but absent from the frozen set", i)
+                                .containsExactly(base, racer);
+                        assertThat(ranAfter).as("round %d: accepted but not run", i).containsExactly("a-base", "b-racer");
+                        assertThat(sizeAtFreeze.get()).isEqualTo(2);
+                    } else {
+                        assertThat(refusedAsFrozen.get()).as("round %d: refused for another reason", i).isTrue();
+                        assertThat(finalSet).as("round %d: refused but present", i).containsExactly(base);
+                        assertThat(ranAfter).as("round %d: refused but run", i).containsExactly("a-base");
+                        assertThat(sizeAtFreeze.get()).isEqualTo(1);
+                    }
+                    for (int k = 0; k < ranDuringRace.size(); k++) {
+                        List<String> expected = reported.get(k).stream().map(f -> f.name()).toList();
+                        List<String> ran = ranDuringRace.get(k);
+                        // a request reads the set once; filters() may have grown by one registration in between
+                        assertThat(ran).as("round %d request %d", i, k)
+                                .isIn(List.of("a-base"), List.of("a-base", "b-racer"));
+                        assertThat(expected.size()).isLessThanOrEqualTo(ran.size());
+                    }
                 }
-                assertThat(sizeWhenFrozen.get()).as("freeze must wait for the registration in progress").isEqualTo(-1);
-
-                release.countDown();
-                registering.get(10, TimeUnit.SECONDS);
-                freezer.join(10_000);
-                assertThat(freezer.isAlive()).isFalse();
-
-                assertThat(sizeWhenFrozen.get()).isEqualTo(2);
-                assertThat(reg.filters()).contains(late).hasSize(2);
-                assertThatThrownBy(() -> reg.registerFilter(new CountingFilter("after")))
-                        .isInstanceOf(IllegalStateException.class);
             } finally {
-                release.countDown();
                 pool.shutdownNow();
             }
         }
@@ -467,6 +504,103 @@ class RegistryTeardownTest {
         }
     }
 
+    private enum Race { UNREGISTER_FILTER, REGISTER_ROUTE, UNREGISTER_ROUTE }
+
+    /**
+     * Runs a mutation, a freeze and a stream of requests together. Whatever the interleaving, once the mutation
+     * and the freeze have returned, the mutation is either reflected in the frozen set and in what requests see,
+     * or it was refused with the frozen exception and is reflected in neither.
+     */
+    private void raceAgainstFreeze(Race race, int rounds) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(3);
+        try {
+            for (int i = 0; i < rounds; i++) {
+                DefaultApiSurfaceRegistry reg = new DefaultApiSurfaceRegistry();
+                List<String> trace = java.util.Collections.synchronizedList(new ArrayList<>());
+                TracingFilter base = new TracingFilter("a-base", trace);
+                TracingFilter victim = new TracingFilter("b-victim", trace);
+                ApiSurfaceRoute things = route("/things", HttpMethod.GET);
+                ApiSurfaceRoute other = route("/other", HttpMethod.GET);
+                reg.registerRoute(things);
+                reg.registerFilter(base);
+                if (race == Race.UNREGISTER_FILTER) {
+                    reg.registerFilter(victim);
+                }
+                if (race == Race.UNREGISTER_ROUTE) {
+                    reg.registerRoute(other);
+                }
+                String requestPath = race == Race.UNREGISTER_FILTER ? "/things" : "/other";
+                CyclicBarrier barrier = new CyclicBarrier(3);
+                AtomicBoolean reportedSuccess = new AtomicBoolean();
+                java.util.concurrent.atomic.AtomicReference<String> refusal = new java.util.concurrent.atomic.AtomicReference<>();
+                AtomicInteger sizeAtFreeze = new AtomicInteger(-1);
+                Future<?> mutating = pool.submit(() -> {
+                    await(barrier);
+                    try {
+                        switch (race) {
+                            case UNREGISTER_FILTER -> reportedSuccess.set(reg.unregisterFilter(victim));
+                            case REGISTER_ROUTE -> {
+                                reg.registerRoute(other);
+                                reportedSuccess.set(true);
+                            }
+                            case UNREGISTER_ROUTE -> reportedSuccess.set(reg.unregisterRoute(other));
+                        }
+                    } catch (IllegalStateException refused) {
+                        refusal.set(refused.getMessage());
+                    }
+                });
+                Future<?> freezing = pool.submit(() -> {
+                    await(barrier);
+                    reg.freeze();
+                    sizeAtFreeze.set(race == Race.UNREGISTER_FILTER ? reg.filters().size() : reg.routeCount());
+                });
+                Future<?> requesting = pool.submit(() -> {
+                    await(barrier);
+                    for (int k = 0; k < 3; k++) {
+                        Exchange ex = get(requestPath);
+                        reg.handle(ex);
+                        assertThat(ex.responses).as("answered exactly once").hasSize(1);
+                    }
+                });
+                mutating.get(10, TimeUnit.SECONDS);
+                freezing.get(10, TimeUnit.SECONDS);
+                requesting.get(10, TimeUnit.SECONDS);
+
+                boolean present = switch (race) {
+                    case UNREGISTER_FILTER -> reg.filters().contains(victim);
+                    case REGISTER_ROUTE, UNREGISTER_ROUTE -> reg.routes().contains(other);
+                };
+                trace.clear();
+                Exchange served = get(requestPath);
+                reg.handle(served);
+                boolean requestSeesIt = switch (race) {
+                    case UNREGISTER_FILTER -> trace.contains("b-victim");
+                    case REGISTER_ROUTE, UNREGISTER_ROUTE -> served.status == HttpStatus.OK;
+                };
+                boolean mutationRemoves = race != Race.REGISTER_ROUTE;
+                if (reportedSuccess.get()) {
+                    assertThat(refusal.get()).as("round %d: reported success and refused", i).isNull();
+                    assertThat(present).as("round %d: %s reported success but the frozen set disagrees", i, race)
+                            .isEqualTo(!mutationRemoves);
+                    assertThat(requestSeesIt).as("round %d: %s reported success but requests disagree", i, race)
+                            .isEqualTo(!mutationRemoves);
+                } else {
+                    assertThat(refusal.get()).as("round %d: %s neither succeeded nor was refused as frozen", i, race)
+                            .isEqualTo(FROZEN_MESSAGE);
+                    assertThat(present).as("round %d: %s refused but the frozen set changed", i, race)
+                            .isEqualTo(mutationRemoves);
+                    assertThat(requestSeesIt).as("round %d: %s refused but requests see a change", i, race)
+                            .isEqualTo(mutationRemoves);
+                }
+                int finalSize = race == Race.UNREGISTER_FILTER ? reg.filters().size() : reg.routeCount();
+                assertThat(finalSize).as("round %d: the set changed after freeze returned", i)
+                        .isEqualTo(sizeAtFreeze.get());
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
     private static void await(CountDownLatch latch) {
         try {
             if (!latch.await(10, TimeUnit.SECONDS)) {
@@ -498,6 +632,23 @@ class RegistryTeardownTest {
         @Override public AdmissionPhase phase() { return AdmissionPhase.PRE_ADMISSION; }
         @Override public boolean filter(HttpExchange exchange, RouteMatch routeMatch) {
             calls.incrementAndGet();
+            return true;
+        }
+    }
+
+    private static final class TracingFilter implements AdmissionFilter {
+        private final String name;
+        private final List<String> trace;
+
+        TracingFilter(String name, List<String> trace) {
+            this.name = name;
+            this.trace = trace;
+        }
+
+        @Override public String name() { return name; }
+        @Override public AdmissionPhase phase() { return AdmissionPhase.PRE_ADMISSION; }
+        @Override public boolean filter(HttpExchange exchange, RouteMatch routeMatch) {
+            trace.add(name);
             return true;
         }
     }

@@ -15,7 +15,9 @@ Status: proof of concept, built against `exeris-kernel` 0.13.1. The API is not s
 
 `ApiSurfaceRegistry` runs the registered `AdmissionFilter`s between route match and handler, ordered by
 `AdmissionPhase` (pre-admission, rate limiting, authentication, authorisation, post-admission) and then by
-name (ADR-099). Filter names are unique and non-blank; registering a duplicate is refused. Each filter
+name (ADR-099). Filter names are unique and non-blank; registering a duplicate is refused. A filter is
+removed by passing `unregisterFilter` the instance that was registered: an equal but different instance
+removes nothing, and the registry never calls `equals`, `hashCode` or `toString` of a filter. Each filter
 either passes the request on or answers it. A filter that verifies the caller records the principal
 through `AdmissionContext.current().authenticate(...)`, once per request, and the session it authenticated
 with through `authenticate(principal, sessionId)`. The handler runs inside the resulting `RequestContext`,
@@ -28,6 +30,11 @@ the handler has no `AdmissionContext` and cannot change it.
   capability reads the caller's session from.
 - **No implicit tenant.** `RequestContext.tenantId()` is empty until the host binds a tenant or an
   authenticated principal carries one.
+- **The correlation id is generated on first read.** A `RequestContext` built without a correlation id has
+  none until `correlationId()` is first called on it (or it is compared, hashed or printed); a request whose
+  correlation id nobody reads never generates one. The id is unpredictable (`UUID.randomUUID()`), and once it
+  exists every read on any thread returns the same value, as does every context admission derives for that
+  request. An id set through `RequestContext.builder().correlationId(...)` is returned as it is.
 - **Tenant conflict is refused.** When the host has already bound a tenant and the authenticated
   principal carries a different tenant, the request is refused with 403 (bare status, naming no tenant).
   Equal tenants, or a host with no bound tenant, keep normal admission.
