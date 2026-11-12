@@ -17,6 +17,7 @@ import eu.exeris.kernel.spi.http.HttpStatus;
 import eu.exeris.kernel.spi.http.HttpVersion;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -72,9 +73,29 @@ import java.util.regex.Pattern;
  * can detach, and addition stays refused. Every mutator and every phase transition runs under one lock, so a
  * mutation either happens before a transition or observes it; the request path never takes that lock.
  *
- * <p>A request reads the filter snapshot before it reads the phase, and a removal is permitted only after the
- * {@code TEARDOWN} write it observed under the lock. A request that does not observe {@code TEARDOWN} therefore
- * read its snapshot before any removal, and runs every filter that was registered when serving ended.
+ * <p><b>Invariant: the ordered filters are read once per request, before the phase.</b> The filters a request
+ * runs are one immutable array, already sorted by phase and then name, held in the volatile field
+ * {@code orderedFilters}. Every mutator ({@code registerFilter}, {@code unregisterFilter}, {@code clear}) builds a
+ * new array and replaces the field with one volatile write, still inside {@code mutationLock}; no array is
+ * ever modified after it is published. A request reads the field once, and only afterwards reads {@code phase};
+ * it never reads the field again, so the whole request runs against one array.
+ *
+ * <p>Removal is permitted while {@code OPEN}, before serving begins, and in {@code TEARDOWN}, after it ended;
+ * never while {@code FROZEN}. A removal in {@code TEARDOWN} runs only after the mutator, holding the lock,
+ * observed {@code phase} at {@code TEARDOWN}, a value written under the same lock, so its write of
+ * {@code orderedFilters} follows the {@code TEARDOWN} write in the synchronisation order. Suppose a request's
+ * read of {@code orderedFilters} returned an array written by such a removal. That read synchronises with the
+ * write, so the {@code TEARDOWN} write happens before the request's later read of {@code phase}, and since no
+ * write follows {@code TEARDOWN} that read returns {@code TEARDOWN}. Read the other way round: a request that
+ * does not observe {@code TEARDOWN} read an array that predates every removal made during {@code TEARDOWN}, and
+ * runs every filter that was registered when serving ended. A request that does observe {@code TEARDOWN}
+ * answers 503 and runs none, so whichever array it holds is not used. No request can therefore pair an array
+ * with a phase that contradicts it. Additions are refused once the phase left {@code OPEN}, so while
+ * {@code FROZEN} the field holds one array. An array is complete when read, because its elements are written
+ * before the volatile write that publishes it.
+ *
+ * <p>The sort key is the phase and name a filter reported when it was registered; the order is not recomputed
+ * per request. {@link #filters()} returns a fresh unmodifiable list of that order and exposes no live state.
  *
  * @since 0.1.0
  */
@@ -84,12 +105,17 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     private static final Pattern PARAM_SEGMENT = Pattern.compile("\\{[a-zA-Z0-9_]+\\}");
 
+    private static final AdmissionFilter[] NO_FILTERS = new AdmissionFilter[0];
+
     private static final Comparator<AdmissionFilter> FILTER_COMPARATOR = Comparator
             .comparing(AdmissionFilter::phase)
             .thenComparing(AdmissionFilter::name);
 
     private final List<ApiSurfaceRoute> routeList = new CopyOnWriteArrayList<>();
-    private final List<AdmissionFilter> filterList = new CopyOnWriteArrayList<>();
+    /** The registered filters in registration order; read and written only while holding {@code mutationLock}. */
+    private final List<AdmissionFilter> filterList = new ArrayList<>();
+    /** The filters sorted by phase and then name; replaced as a whole under {@code mutationLock}, never modified. */
+    private volatile AdmissionFilter[] orderedFilters = NO_FILTERS;
     private volatile boolean strictRoutes;
     private final Object mutationLock = new Object();
     private volatile Phase phase = Phase.OPEN;
@@ -210,6 +236,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                 }
             }
             filterList.add(filter);
+            publishOrderedFilters();
         }
         LOG.log(System.Logger.Level.DEBUG, "Registered admission filter: {0} ({1})", filter.name(), filter.phase());
     }
@@ -219,15 +246,24 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         Objects.requireNonNull(filter, "filter");
         synchronized (mutationLock) {
             checkRemovalAllowed();
-            return filterList.remove(filter);
+            boolean removed = filterList.remove(filter);
+            if (removed) {
+                publishOrderedFilters();
+            }
+            return removed;
         }
+    }
+
+    /** Must be called holding {@code mutationLock}, after {@code filterList} changed. */
+    private void publishOrderedFilters() {
+        AdmissionFilter[] sorted = filterList.toArray(NO_FILTERS);
+        Arrays.sort(sorted, FILTER_COMPARATOR);
+        orderedFilters = sorted;
     }
 
     @Override
     public List<AdmissionFilter> filters() {
-        List<AdmissionFilter> copy = new ArrayList<>(filterList);
-        copy.sort(FILTER_COMPARATOR);
-        return Collections.unmodifiableList(copy);
+        return Collections.unmodifiableList(new ArrayList<>(Arrays.asList(orderedFilters)));
     }
 
     @Override
@@ -247,16 +283,17 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         MatchedHttpExchange tracked = exchange instanceof MatchedHttpExchange matched
                 ? matched
                 : new MatchedHttpExchange(exchange, exchange.pathParams());
-        // The snapshot is taken before the phase is read: a removal is permitted only after teardown was
-        // written, so a request that does not see teardown holds a snapshot that predates every removal.
-        List<AdmissionFilter> orderedFilters = filters();
+        // The array is read before the phase and not again: a removal is permitted only after teardown was
+        // written, so a request that does not see teardown holds an array that predates every removal.
+        AdmissionFilter[] ordered = orderedFilters;
         if (phase == Phase.TEARDOWN) {
             if (!tracked.responded()) {
                 answer(tracked, HttpStatus.SERVICE_UNAVAILABLE, null, "registry is tearing down", routeMatch, null);
             }
             return false;
         }
-        for (AdmissionFilter filter : orderedFilters) {
+        for (int i = 0; i < ordered.length; i++) {
+            AdmissionFilter filter = ordered[i];
             try {
                 boolean proceed = DefaultAdmissionContext.callWith(admission,
                         () -> DefaultRequestContext.bind(admission.requestContext(),
@@ -462,6 +499,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             checkRemovalAllowed();
             routeList.clear();
             filterList.clear();
+            orderedFilters = NO_FILTERS;
         }
     }
 
