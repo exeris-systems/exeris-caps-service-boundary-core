@@ -111,7 +111,20 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             .comparing(AdmissionFilter::phase)
             .thenComparing(AdmissionFilter::name);
 
-    private final List<ApiSurfaceRoute> routeList = new CopyOnWriteArrayList<>();
+    /**
+     * A registered route together with the match it always produces, when it has one: a route without path
+     * parameters matches every request with the same route and no parameters, so that match is built once at
+     * registration. A {@link RouteMatch} is an immutable record of an immutable route and an immutable, empty
+     * parameter map, holds no per-request state and is compared by value, so sharing one instance between
+     * requests and threads is indistinguishable from building one per request.
+     */
+    private record RegisteredRoute(ApiSurfaceRoute route, RouteMatch literalMatch) {
+        static RegisteredRoute of(ApiSurfaceRoute route) {
+            return new RegisteredRoute(route, route.paramNames().isEmpty() ? new RouteMatch(route, Map.of()) : null);
+        }
+    }
+
+    private final List<RegisteredRoute> routeList = new CopyOnWriteArrayList<>();
     /** The registered filters in registration order; read and written only while holding {@code mutationLock}. */
     private final List<AdmissionFilter> filterList = new ArrayList<>();
     /** The filters sorted by phase and then name; replaced as a whole under {@code mutationLock}, never modified. */
@@ -197,14 +210,15 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                 throw new IllegalStateException("Strict route mode: route " + route.method() + " "
                         + route.pathPattern() + " declared no requirements");
             }
-            for (ApiSurfaceRoute existing : routeList) {
+            for (RegisteredRoute entry : routeList) {
+                ApiSurfaceRoute existing = entry.route();
                 if (existing.method() == route.method()
                         && shape(existing.pathPattern()).equals(shape(route.pathPattern()))) {
                     throw new IllegalStateException("A route is already registered for " + route.method()
                             + " " + route.pathPattern());
                 }
             }
-            routeList.add(route);
+            routeList.add(RegisteredRoute.of(route));
         }
         LOG.log(System.Logger.Level.DEBUG, "Registered boundary route: {0}", route);
     }
@@ -214,7 +228,8 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         Objects.requireNonNull(route, "route");
         synchronized (mutationLock) {
             checkRemovalAllowed();
-            return routeList.removeIf(existing -> existing.equals(route) && existing.handler() == route.handler());
+            return routeList.removeIf(entry -> entry.route().equals(route)
+                    && entry.route().handler() == route.handler());
         }
     }
 
@@ -451,20 +466,26 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     @Override
     public Optional<RouteMatch> matchRoute(HttpMethod method, String path) {
+        return Optional.ofNullable(findMatch(method, path));
+    }
+
+    /** The match for the request, or {@code null} when no route serves the method and path. */
+    private RouteMatch findMatch(HttpMethod method, String path) {
         if (method == null || path == null) {
-            return Optional.empty();
+            return null;
         }
         String cleanPath = stripQueryString(path);
 
-        ApiSurfaceRoute exactMatch = null;
+        RegisteredRoute exactMatch = null;
         ApiSurfaceRoute parameterizedMatch = null;
         Map<String, String> extractedParams = null;
 
-        for (ApiSurfaceRoute route : routeList) {
+        for (RegisteredRoute entry : routeList) {
+            ApiSurfaceRoute route = entry.route();
             if (route.matchesMethod(method) && route.matchesPath(cleanPath)) {
-                if (route.paramNames().isEmpty()) {
+                if (entry.literalMatch() != null) {
                     // Exact match takes precedence immediately
-                    exactMatch = route;
+                    exactMatch = entry;
                     break;
                 } else if (parameterizedMatch == null) {
                     parameterizedMatch = route;
@@ -474,18 +495,21 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         }
 
         if (exactMatch != null) {
-            return Optional.of(new RouteMatch(exactMatch, Map.of()));
+            return exactMatch.literalMatch();
         }
         if (parameterizedMatch != null) {
-            return Optional.of(new RouteMatch(parameterizedMatch, extractedParams != null ? extractedParams : Map.of()));
+            return new RouteMatch(parameterizedMatch, extractedParams != null ? extractedParams : Map.of());
         }
-
-        return Optional.empty();
+        return null;
     }
 
     @Override
     public List<ApiSurfaceRoute> routes() {
-        return Collections.unmodifiableList(new ArrayList<>(routeList));
+        List<ApiSurfaceRoute> routes = new ArrayList<>(routeList.size());
+        for (RegisteredRoute entry : routeList) {
+            routes.add(entry.route());
+        }
+        return Collections.unmodifiableList(routes);
     }
 
     @Override
@@ -514,9 +538,8 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         String cleanPath = stripQueryString(rawPath);
         HttpMethod method = exchange.request().method();
 
-        Optional<RouteMatch> matchOpt = matchRoute(method, cleanPath);
-        if (matchOpt.isPresent()) {
-            RouteMatch match = matchOpt.get();
+        RouteMatch match = findMatch(method, cleanPath);
+        if (match != null) {
             MatchedHttpExchange effectiveExchange = new MatchedHttpExchange(exchange, match.pathParams());
             boolean handlerStarted = false;
             try {
@@ -555,9 +578,9 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
         // Check if path matches for any other HTTP method
         Set<String> allowedMethods = new LinkedHashSet<>();
-        for (ApiSurfaceRoute route : routeList) {
-            if (route.matchesPath(cleanPath)) {
-                allowedMethods.add(route.method().name());
+        for (RegisteredRoute entry : routeList) {
+            if (entry.route().matchesPath(cleanPath)) {
+                allowedMethods.add(entry.route().method().name());
             }
         }
 
