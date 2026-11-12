@@ -54,15 +54,30 @@ the handler has no `AdmissionContext` and cannot change it.
   without draining the boundary, or terminates the boundary after them, calls `beginTeardown()` before
   terminating the first of them. Teardown is one-way: `ready()` after it throws.
 - **No matched exchange is left unanswered.** The registry does not rely on the kernel to complete an exchange
-  a filter or handler left open. It answers 500 (bare status, as the 404, 405 and 503 answers) when a filter
-  returns `false` without having responded, when the handler returns without having responded, and when a
-  filter or handler throws an `Exception`. When a filter or handler throws an `Error`, the registry answers
-  500 if the exchange is still unanswered and rethrows the same `Error`; for a `VirtualMachineError` (for
-  example `OutOfMemoryError`) it rethrows without attempting to answer. An exchange on which `respond` was
-  already called is never answered a second time, and a failure while answering an `Error` is attached to it as
-  suppressed. A denial through a filter that did respond, a 401 or 403 from a route requirement, and a 403 from
-  a tenant conflict are unchanged. The registry logs one WARNING for an unanswered filter or handler, naming
-  the route's path pattern and the class of the filter or handler, and no header or body value.
+  a filter or handler left open. It answers 500 (a bare status with no body and no headers, unlike the 405
+  answer, which carries an `Allow` header) when a filter returns `false` without having responded, when the
+  handler returns without having responded, and when a filter or handler throws an `Exception`. When a filter
+  or handler throws an `Error`, the registry answers 500 if the exchange is still unanswered and rethrows the
+  same `Error`; for a `VirtualMachineError` (for example `OutOfMemoryError`) it rethrows without attempting to
+  answer. An exchange on which `respond` was already called is never answered a second time by the registry.
+  A denial through a filter that did respond, a 401 or 403 from a route requirement, and a 403 from a tenant
+  conflict are unchanged. The registry logs one WARNING for an unanswered filter or handler, naming the
+  route's path pattern and the class of the filter or handler, and no header or body value. A thrown
+  `Exception` is logged once at ERROR with the route's path pattern, the class of the filter or handler and
+  the exception's class name; the throwable and its message are not logged, because a message may hold
+  request data.
+- **Admission ends when the exchange is answered.** After each filter returns, the registry reads whether the
+  exchange has been answered. If it has, the remaining filters and the handler do not run, whatever the
+  filter returned; a filter that answered and returned `true` is a contract violation and is logged once at
+  WARNING with the route's path pattern and the filter's class. The check is one read of the flag the
+  registry already keeps, per filter, on the success path. A second `respond` on an exchange, by a filter or
+  by a handler, is the kernel's refusal: the exchange throws `IllegalStateException` before writing anything,
+  and the registry adds no guard of its own.
+- **When answering 500 itself fails.** One rule covers filters and handlers. If the original failure was an
+  `Error`, that `Error` leaves `handle()` with the answering failure attached as suppressed. Otherwise (the
+  original was an `Exception`, or the filter or handler returned without answering) the answering failure is
+  logged once at ERROR by class name and `handle()` returns normally, since nothing more can be done for that
+  exchange. A `VirtualMachineError` thrown by the answering attempt always propagates.
 - **A handler answers before it returns.** The kernel's `HttpHandler` contract is to call
   `HttpExchange.respond` exactly once before returning, and this capability has no way for a handler to
   answer later: a handler that returns first is answered 500, and an answer it writes afterwards is not
