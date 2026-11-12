@@ -17,8 +17,9 @@ import java.util.UUID;
  * synchronisation; it is bound through a {@link ScopedValue} and never escapes the request. The thread
  * that opens the context owns it, and every call from another thread is refused.
  *
- * <p>{@link #requestContext()} returns the same instance until a write changes the principal, session, tenant
- * or attributes, and a new one after it. Contexts are immutable, so an instance handed to a filter keeps the
+ * <p>{@link #requestContext()} returns the same instance until a write to the principal, session, tenant or
+ * attributes, and a new one after it. Every such write counts, including an attribute write of a value equal to
+ * the one held, which yields a new instance equal to the previous one. Contexts are immutable, so an instance handed to a filter keeps the
  * state it was built from.
  *
  * <p>All contexts built for one request return the same correlation identifier, generated when something
@@ -151,7 +152,10 @@ public final class DefaultAdmissionContext implements AdmissionContext {
         }
     }
 
-    /** Replaces the shared seed attributes with a private mutable copy that keeps their iteration order. */
+    /**
+     * Replaces the shared seed attributes with a private mutable copy. The contexts built from it hold an
+     * immutable copy of the map that promises no iteration order.
+     */
     private void ownAttributes() {
         if (!attributesOwned) {
             attributes = new LinkedHashMap<>(attributes);

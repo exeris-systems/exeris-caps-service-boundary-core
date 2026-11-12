@@ -28,6 +28,11 @@ does. An allocation test in this repository, built on the kernel TCK's allocatio
 non-zero allocation per `handle()` call for an anonymous route, and it pins that strict mode adds none; it does
 not pin the total.
 
+A literal route pays nothing only when it is registered before the parameterised routes. The match walks the routes
+in registration order, and every parameterised route scanned before the match runs its pattern, so a literal
+route registered after parameterised routes pays for scanning each of them; one registered before them stops the
+walk first.
+
 Removed already, for a route with no path parameter: the per-request copy and sort of the filters (the registry
 keeps one pre-sorted array and reads it once per request), the `RouteMatch` and `Optional` (the match is built
 at registration), the attribute map of the admission context (allocated on the first write), the request
@@ -58,8 +63,10 @@ expression and make a `Matcher` for each parameterised route scanned, the `Linke
 substrings of the extraction, and the copies of that map made by the `RouteMatch` and `MatchedHttpExchange`
 constructors; each parameterised route scanned before the match costs again, so the cost grows with the number
 of routes. Closing this needs matching that does not use a regular expression, an index from the path to the
-route, and a path-parameter holder that is lent rather than copied. The 404 and 405 answers allocate too: a
-substring, the set of allowed methods and the header list.
+route, and a path-parameter holder that is lent rather than copied. The 404 and 405 answers allocate too: both
+build the set of allowed methods, and may cut a substring (when the request path has a query string) and run the
+pattern of each parameterised route; a 405 also builds the `Allow` value and the header list. Which of these
+the JIT removes varies, so this page does not count them.
 
 None of the remaining items has an allocation figure in this page; the allocation test is to be extended to pin
 a total per scenario once the remaining sites are decided, with the `ScopedValue` bindings counted as the
