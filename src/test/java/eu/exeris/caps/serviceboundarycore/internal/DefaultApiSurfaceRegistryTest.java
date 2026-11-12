@@ -14,6 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import eu.exeris.kernel.spi.http.RouteRequirement;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -42,7 +43,7 @@ class DefaultApiSurfaceRegistryTest {
         @Test
         @DisplayName("registers and matches an exact route")
         void matchesExactRoute() {
-            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/api/v1/health")
                     .actionName("Health#check")
@@ -63,7 +64,7 @@ class DefaultApiSurfaceRegistryTest {
         @Test
         @DisplayName("registers and matches a parameterized route with parameter extraction")
         void matchesParameterizedRoute() {
-            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/api/v1/orders/{orderId}/items/{itemId}")
                     .actionName("Order#getItem")
@@ -83,14 +84,14 @@ class DefaultApiSurfaceRegistryTest {
         @Test
         @DisplayName("exact match takes precedence over parameterized route")
         void exactMatchPrecedence() {
-            ApiSurfaceRoute parameterized = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute parameterized = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/api/v1/users/{id}")
                     .actionName("User#get")
                     .handler(ex -> ex.respond(HttpStatus.OK))
                     .build();
 
-            ApiSurfaceRoute exact = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute exact = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/api/v1/users/me")
                     .actionName("User#me")
@@ -109,7 +110,7 @@ class DefaultApiSurfaceRegistryTest {
         @Test
         @DisplayName("unregisters an existing route")
         void unregistersRoute() {
-            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/api/v1/ping")
                     .actionName("Ping#ping")
@@ -128,13 +129,13 @@ class DefaultApiSurfaceRegistryTest {
         @Test
         @DisplayName("clears all routes")
         void clearsAllRoutes() {
-            registry.registerRoute(ApiSurfaceRoute.builder()
+            registry.registerRoute(ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/r1")
                     .actionName("A#1")
                     .handler(ex -> ex.respond(HttpStatus.OK))
                     .build());
-            registry.registerRoute(ApiSurfaceRoute.builder()
+            registry.registerRoute(ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.POST)
                     .pathPattern("/r2")
                     .actionName("A#2")
@@ -158,7 +159,7 @@ class DefaultApiSurfaceRegistryTest {
             AtomicReference<Map<String, String>> receivedParams = new AtomicReference<>();
             AtomicBoolean handlerInvoked = new AtomicBoolean();
 
-            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/customers/{cid}/invoices/{invId}")
                     .actionName("Invoice#get")
@@ -199,7 +200,7 @@ class DefaultApiSurfaceRegistryTest {
         @Test
         @DisplayName("returns 405 METHOD_NOT_ALLOWED when path matches under another method")
         void returnsMethodNotAllowed() {
-            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.POST)
                     .pathPattern("/api/v1/orders")
                     .actionName("Order#create")
@@ -223,7 +224,7 @@ class DefaultApiSurfaceRegistryTest {
         @Test
         @DisplayName("returns 500 INTERNAL_SERVER_ERROR when handler throws uncaught exception")
         void returnsInternalServerErrorOnException() {
-            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/faulty")
                     .actionName("Faulty#run")
@@ -247,7 +248,7 @@ class DefaultApiSurfaceRegistryTest {
         @DisplayName("strips query string before matching route")
         void stripsQueryString() {
             AtomicBoolean invoked = new AtomicBoolean();
-            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/api/v1/search")
                     .actionName("Search#query")
@@ -275,7 +276,7 @@ class DefaultApiSurfaceRegistryTest {
     class RegistrationGuards {
 
         private ApiSurfaceRoute route(String action, HttpHandler handler) {
-            return ApiSurfaceRoute.builder().method(HttpMethod.GET).pathPattern("/dup")
+            return ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll())).method(HttpMethod.GET).pathPattern("/dup")
                     .actionName(action).handler(handler).build();
         }
 
@@ -291,10 +292,10 @@ class DefaultApiSurfaceRegistryTest {
         @DisplayName("patterns that differ only in parameter names are one route and the second is refused")
         void aliasedParameterRouteRefused() {
             HttpHandler first = ex -> { };
-            registry.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.GET).pathPattern("/a/{id}")
+            registry.registerRoute(ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll())).method(HttpMethod.GET).pathPattern("/a/{id}")
                     .actionName("A#a").handler(first).build());
 
-            assertThatThrownBy(() -> registry.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.GET)
+            assertThatThrownBy(() -> registry.registerRoute(ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll())).method(HttpMethod.GET)
                     .pathPattern("/a/{name}").actionName("B#b").handler(ex -> { }).build()))
                     .isInstanceOf(IllegalStateException.class);
             assertThat(registry.routeCount()).isEqualTo(1);
@@ -303,11 +304,11 @@ class DefaultApiSurfaceRegistryTest {
         @Test
         @DisplayName("the same parameterised shape is allowed for another method or another literal segment")
         void distinctShapesAllowed() {
-            registry.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.GET).pathPattern("/a/{id}")
+            registry.registerRoute(ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll())).method(HttpMethod.GET).pathPattern("/a/{id}")
                     .actionName("A#a").handler(ex -> { }).build());
-            registry.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.POST).pathPattern("/a/{name}")
+            registry.registerRoute(ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll())).method(HttpMethod.POST).pathPattern("/a/{name}")
                     .actionName("B#b").handler(ex -> { }).build());
-            registry.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.GET).pathPattern("/b/{id}")
+            registry.registerRoute(ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll())).method(HttpMethod.GET).pathPattern("/b/{id}")
                     .actionName("C#c").handler(ex -> { }).build());
 
             assertThat(registry.routeCount()).isEqualTo(3);
@@ -405,7 +406,7 @@ class DefaultApiSurfaceRegistryTest {
             registry.registerFilter(rateLimitFilter);
             registry.registerFilter(preFilterA);
 
-            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/api/test")
                     .actionName("Test#action")
@@ -460,7 +461,7 @@ class DefaultApiSurfaceRegistryTest {
             registry.registerFilter(rateLimiter);
             registry.registerFilter(authFilter);
 
-            ApiSurfaceRoute route = ApiSurfaceRoute.builder()
+            ApiSurfaceRoute route = ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/api/test")
                     .actionName("Test#action")
@@ -493,7 +494,7 @@ class DefaultApiSurfaceRegistryTest {
                 }
             });
             AtomicBoolean invoked = new AtomicBoolean();
-            registry.registerRoute(ApiSurfaceRoute.builder()
+            registry.registerRoute(ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                     .method(HttpMethod.GET)
                     .pathPattern("/api/test")
                     .actionName("Test#action")

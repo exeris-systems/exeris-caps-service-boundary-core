@@ -12,6 +12,7 @@ import eu.exeris.kernel.spi.security.PrincipalContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import eu.exeris.kernel.spi.http.RouteRequirement;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -197,7 +198,7 @@ class TenantMembershipFilterTest {
     }
 
     private void registerRoute(String pathPattern) {
-        registry.registerRoute(ApiSurfaceRoute.builder()
+        registry.registerRoute(ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                 .method(HttpMethod.GET)
                 .pathPattern(pathPattern)
                 .actionName("Test#action")

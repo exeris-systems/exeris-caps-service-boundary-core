@@ -15,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import eu.exeris.kernel.spi.http.RouteRequirement;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -56,7 +57,7 @@ class RegistryTeardownTest {
     }
 
     private ApiSurfaceRoute route(String path, HttpMethod method) {
-        return ApiSurfaceRoute.builder()
+        return ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll()))
                 .method(method)
                 .pathPattern(path)
                 .actionName("Test#" + path)
@@ -327,7 +328,7 @@ class RegistryTeardownTest {
             GateFilter gate = new GateFilter("a-gate", inside, release);
             CountingFilter guard = new CountingFilter("b-guard");
             AtomicInteger handled = new AtomicInteger();
-            reg.registerRoute(ApiSurfaceRoute.builder().method(HttpMethod.GET).pathPattern("/x")
+            reg.registerRoute(ApiSurfaceRoute.builder().requirements(List.of(RouteRequirement.permitAll())).method(HttpMethod.GET).pathPattern("/x")
                     .actionName("X#get").handler(ex -> {
                         handled.incrementAndGet();
                         ex.respond(HttpStatus.OK);
