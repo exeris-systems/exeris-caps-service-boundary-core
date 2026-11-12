@@ -17,6 +17,10 @@ import java.util.UUID;
  * synchronisation; it is bound through a {@link ScopedValue} and never escapes the request. The thread
  * that opens the context owns it, and every call from another thread is refused.
  *
+ * <p>{@link #requestContext()} returns the same instance until a write changes the principal, session, tenant
+ * or attributes, and a new one after it. Contexts are immutable, so an instance handed to a filter keeps the
+ * state it was built from.
+ *
  * <p>The attribute map is allocated by the first write that changes it; a request whose filters set no
  * attribute allocates none, and reading an empty one allocates nothing.
  *
@@ -33,6 +37,13 @@ public final class DefaultAdmissionContext implements AdmissionContext {
      */
     private Map<String, Object> attributes;
     private boolean attributesOwned;
+    /**
+     * The context built from the state as it stands, or {@code null} when that state changed since the last
+     * build. Every write to the principal, session, tenant or attributes clears it, so a context handed out
+     * reflects exactly the state established when it was requested and never a later one. Read and written
+     * only after {@link #requireOwner()}, hence only by the thread that runs the request's filters.
+     */
+    private RequestContext established;
     private final Thread owner = Thread.currentThread();
     private PrincipalContext principal;
     private UUID sessionId;
@@ -101,9 +112,13 @@ public final class DefaultAdmissionContext implements AdmissionContext {
                 throw new TenantConflictException();
             }
         }
-        this.principal = principal;
-        this.sessionId = sessionId;
-        principal.tenantId().ifPresent(tenant -> this.tenantId = tenant.toString());
+        try {
+            this.principal = principal;
+            this.sessionId = sessionId;
+            principal.tenantId().ifPresent(tenant -> this.tenantId = tenant.toString());
+        } finally {
+            established = null;
+        }
     }
 
     @Override
@@ -114,9 +129,11 @@ public final class DefaultAdmissionContext implements AdmissionContext {
             if (!attributes.containsKey(key)) {
                 return;
             }
+            established = null;
             ownAttributes();
             attributes.remove(key);
         } else {
+            established = null;
             ownAttributes();
             attributes.put(key, value);
         }
@@ -133,16 +150,12 @@ public final class DefaultAdmissionContext implements AdmissionContext {
     @Override
     public RequestContext requestContext() {
         requireOwner();
-        DefaultRequestContext.Builder builder = new DefaultRequestContext.Builder();
-        if (tenantId != null) {
-            builder.tenantId(tenantId);
+        RequestContext built = established;
+        if (built == null) {
+            built = DefaultRequestContext.of(tenantId, seed.correlationId(), principal, sessionId, attributes);
+            established = built;
         }
-        return builder
-                .correlationId(seed.correlationId())
-                .principal(principal)
-                .sessionId(sessionId)
-                .attributes(attributes)
-                .build();
+        return built;
     }
 
     /** Ends admission: after this, the context the handler runs in can no longer change. */

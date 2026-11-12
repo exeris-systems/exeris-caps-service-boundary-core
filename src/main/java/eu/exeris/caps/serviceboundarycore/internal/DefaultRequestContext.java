@@ -47,6 +47,18 @@ public final class DefaultRequestContext implements RequestContext {
         this.attributes = attributes != null ? Map.copyOf(attributes) : Map.of();
     }
 
+    /**
+     * Builds a context from the state admission has established, without a {@link Builder}. The attributes are
+     * copied (an immutable map is shared as it is), so later changes to the map passed in are not visible.
+     */
+    static DefaultRequestContext of(String tenantId,
+                                    String correlationId,
+                                    PrincipalContext principal,
+                                    UUID sessionId,
+                                    Map<String, Object> attributes) {
+        return new DefaultRequestContext(tenantId, correlationId, principal, sessionId, attributes);
+    }
+
     public static RequestContext current() {
         if (!CURRENT.isBound()) {
             throw new IllegalStateException("No RequestContext is bound in the current scope");
