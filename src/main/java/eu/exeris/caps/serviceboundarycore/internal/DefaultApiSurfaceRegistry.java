@@ -97,8 +97,9 @@ import java.util.regex.Pattern;
  *
  * <p>The sort key is the phase and name a filter reported when it was registered. Both are read exactly once,
  * inside {@code registerFilter} before anything is changed, and kept in an immutable {@code RegisteredFilter};
- * sorting, the duplicate-name check and the log records of the registry use those captured values only, and
- * {@code name()} and {@code phase()} are never called on a registered filter again, so a filter that later
+ * sorting, the duplicate-name check and the record written for the registration use those captured values; the
+ * other log records name the filter's class. {@code name()} and {@code phase()} are never called on a
+ * registered filter again, so a filter that later
  * reports another name or phase keeps its place and its name. The order is not recomputed per request, and a
  * rebuild sorts the captured values, not the filters. {@code registerFilter} validates everything and builds the
  * new array before it changes the list or replaces {@code orderedFilters}, so a registration that throws, at any

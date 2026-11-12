@@ -25,8 +25,9 @@ import java.util.UUID;
  * <p>All contexts built for one request return the same correlation identifier, generated when something
  * first reads it (see {@link DefaultRequestContext}); opening the admission context generates none.
  *
- * <p>The attribute map is allocated by the first write that changes it; a request whose filters set no
- * attribute allocates none, and reading an empty one allocates nothing.
+ * <p>The attribute map is allocated by the first attribute write that sets a value (an equal value included) or
+ * removes a key that is present; a request whose filters write no attribute allocates none, and reading an empty
+ * one allocates nothing.
  *
  * @since 0.1.0
  */
@@ -42,7 +43,7 @@ public final class DefaultAdmissionContext implements AdmissionContext {
     private RequestContext correlationSource;
     /**
      * The attributes admission has established. Until the first write it is the seed's immutable map, which is
-     * shared and never modified; the first write that changes it replaces it with a private mutable copy.
+     * shared and never modified; the first write that sets a value or removes a present key replaces it with a private mutable copy.
      */
     private Map<String, Object> attributes;
     private boolean attributesOwned;
