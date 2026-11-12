@@ -28,6 +28,7 @@ public final class ScriptedExchange implements HttpExchange {
 
     private final HttpRequest request;
     private final List<Call> calls = new ArrayList<>();
+    private final List<HttpResponse> responses = new ArrayList<>();
     private final AtomicReference<Throwable> failure = new AtomicReference<>();
     private final AtomicReference<Throwable> firstAttemptFailure = new AtomicReference<>();
     private volatile boolean refuseSecondAnswer;
@@ -82,6 +83,11 @@ public final class ScriptedExchange implements HttpExchange {
         return statuses;
     }
 
+    /** The {@link HttpResponse} of every recorded {@code respond(HttpResponse)} attempt, in order. */
+    public synchronized List<HttpResponse> responses() {
+        return List.copyOf(responses);
+    }
+
     public synchronized int respondCount() {
         return calls.size();
     }
@@ -98,25 +104,25 @@ public final class ScriptedExchange implements HttpExchange {
 
     @Override
     public void respond(HttpResponse response) {
-        record(Kind.RESPONSE, response.status());
+        record(Kind.RESPONSE, response.status(), response);
     }
 
     @Override
     public void respond(HttpTypedResponse typedResponse) {
-        record(Kind.TYPED, typedResponse.status());
+        record(Kind.TYPED, typedResponse.status(), null);
     }
 
     @Override
     public void respond(HttpStatus status, Object body) {
-        record(Kind.STATUS_AND_BODY, status);
+        record(Kind.STATUS_AND_BODY, status, null);
     }
 
     @Override
     public void respond(HttpStatus status) {
-        record(Kind.STATUS, status);
+        record(Kind.STATUS, status, null);
     }
 
-    private void record(Kind kind, HttpStatus status) {
+    private void record(Kind kind, HttpStatus status, HttpResponse response) {
         synchronized (this) {
             if (refuseSecondAnswer && !calls.isEmpty()) {
                 throw new IllegalStateException("The exchange has already been answered");
@@ -129,6 +135,9 @@ public final class ScriptedExchange implements HttpExchange {
                 throw error;
             }
             calls.add(new Call(kind, status));
+            if (response != null) {
+                responses.add(response);
+            }
         }
         Throwable toThrow = failure.get();
         if (toThrow instanceof RuntimeException runtime) {
