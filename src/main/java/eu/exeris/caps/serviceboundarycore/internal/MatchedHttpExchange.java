@@ -6,6 +6,8 @@ import eu.exeris.kernel.spi.http.HttpResponse;
 import eu.exeris.kernel.spi.http.HttpStatus;
 import eu.exeris.kernel.spi.http.HttpTypedResponse;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.Map;
 import java.util.Objects;
 
@@ -30,13 +32,45 @@ import java.util.Objects;
  *
  * <p>Both facts live in one volatile field with three states (none, attempted without an answer, answered),
  * so recording an answer costs one volatile write and reading both costs one volatile read. An answer is
- * never downgraded: a refused second call leaves an answered exchange answered.
+ * never downgraded: a refused second call leaves an answered exchange answered. No object is allocated per
+ * exchange.
+ *
+ * <p><b>Invariant: the state is monotonic.</b> The only transitions are none to attempted, none to answered
+ * and attempted to answered; nothing leaves answered. Two writers exist. A failure performs
+ * {@code compareAndSet(NONE, ATTEMPTED)}, which succeeds only from none and otherwise changes nothing. A
+ * success performs a plain volatile write of {@code ANSWERED}, the terminal state. The writes that can race
+ * are a failure against a success (and failures against each other). Every interleaving ends answered if any
+ * success occurred: a failure's compare-and-set either runs before the success write, in which case it moves
+ * none to attempted and the success write then overwrites it with answered, or after it, in which case the
+ * field already holds answered, the compare-and-set finds no none and writes nothing. Because the failure
+ * path never writes a value it has not just compared against none, it cannot overwrite answered, so no
+ * interleaving leaves attempted after a {@code respond} returned. Two failures race harmlessly: both write
+ * the same value.
+ *
+ * <p><b>Readers.</b> {@link #responded()} and {@link #attempted()} are each a single volatile read and
+ * return a consistent snapshot of one state. The registry reads after the filter or handler it called has
+ * returned, on the thread that called it; the documented handler contract is that a handler answers before
+ * it returns. A {@code respond} still in flight on another thread at that moment is outside that contract:
+ * the read may then see none or attempted although a success write is about to follow. Seeing attempted is
+ * safe, because the registry then ends admission and answers 500 at most once, which the kernel refuses if
+ * the exchange was already claimed. Seeing none is the contract violation itself and is not made safe by
+ * this class. A reader that sees answered never sees it retracted.
  */
 public final class MatchedHttpExchange implements HttpExchange {
 
     private static final int NONE = 0;
     private static final int ATTEMPTED = 1;
     private static final int ANSWERED = 2;
+
+    private static final VarHandle STATE;
+
+    static {
+        try {
+            STATE = MethodHandles.lookup().findVarHandle(MatchedHttpExchange.class, "state", int.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
 
     private final HttpExchange delegate;
     private final Map<String, String> pathParams;
@@ -60,11 +94,9 @@ public final class MatchedHttpExchange implements HttpExchange {
         return state != NONE;
     }
 
-    /** Records that a {@code respond} call threw; an answer already recorded stays. */
+    /** Records that a {@code respond} call threw; moves none to attempted and changes nothing else. */
     private void failed() {
-        if (state != ANSWERED) {
-            state = ATTEMPTED;
-        }
+        STATE.compareAndSet(this, NONE, ATTEMPTED);
     }
 
     @Override
