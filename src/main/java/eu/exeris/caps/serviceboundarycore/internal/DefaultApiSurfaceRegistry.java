@@ -1,6 +1,7 @@
 package eu.exeris.caps.serviceboundarycore.internal;
 
 import eu.exeris.caps.serviceboundarycore.api.AdmissionFilter;
+import eu.exeris.caps.serviceboundarycore.api.AdmissionPhase;
 import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRegistry;
 import eu.exeris.caps.serviceboundarycore.api.ApiSurfaceRoute;
 import eu.exeris.caps.serviceboundarycore.api.RequestContext;
@@ -94,8 +95,15 @@ import java.util.regex.Pattern;
  * {@code FROZEN} the field holds one array. An array is complete when read, because its elements are written
  * before the volatile write that publishes it.
  *
- * <p>The sort key is the phase and name a filter reported when it was registered; the order is not recomputed
- * per request. {@link #filters()} returns a fresh unmodifiable list of that order and exposes no live state.
+ * <p>The sort key is the phase and name a filter reported when it was registered. Both are read exactly once,
+ * inside {@code registerFilter} before anything is changed, and kept in an immutable {@code RegisteredFilter};
+ * sorting, the duplicate-name check and the log records of the registry use those captured values only, and
+ * {@code name()} and {@code phase()} are never called on a registered filter again, so a filter that later
+ * reports another name or phase keeps its place and its name. The order is not recomputed per request, and a
+ * rebuild sorts the captured values, not the filters. {@code registerFilter} validates everything and builds the
+ * new array before it changes the list or replaces {@code orderedFilters}, so a registration that throws, at any
+ * point, leaves both as they were. {@link #filters()} returns a fresh unmodifiable list of that order and
+ * exposes no live state.
  *
  * @since 0.1.0
  */
@@ -107,9 +115,13 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     private static final AdmissionFilter[] NO_FILTERS = new AdmissionFilter[0];
 
-    private static final Comparator<AdmissionFilter> FILTER_COMPARATOR = Comparator
-            .comparing(AdmissionFilter::phase)
-            .thenComparing(AdmissionFilter::name);
+    private static final Comparator<RegisteredFilter> FILTER_COMPARATOR = Comparator
+            .comparing(RegisteredFilter::phase)
+            .thenComparing(RegisteredFilter::name);
+
+    /** A filter with the name and phase it reported when it was registered; immutable, so it never drifts. */
+    private record RegisteredFilter(AdmissionFilter filter, String name, AdmissionPhase phase) {
+    }
 
     /**
      * A registered route together with the match it always produces, when it has one: a route without path
@@ -126,7 +138,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
 
     private final List<RegisteredRoute> routeList = new CopyOnWriteArrayList<>();
     /** The registered filters in registration order; read and written only while holding {@code mutationLock}. */
-    private final List<AdmissionFilter> filterList = new ArrayList<>();
+    private final List<RegisteredFilter> filterList = new ArrayList<>();
     /** The filters sorted by phase and then name; replaced as a whole under {@code mutationLock}, never modified. */
     private volatile AdmissionFilter[] orderedFilters = NO_FILTERS;
     private volatile boolean strictRoutes;
@@ -237,23 +249,31 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     public void registerFilter(AdmissionFilter filter) {
         Objects.requireNonNull(filter, "filter");
         String name = filter.name();
+        AdmissionPhase filterPhase = filter.phase();
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("An admission filter needs a non-blank name");
         }
-        if (filter.phase() == null) {
+        if (filterPhase == null) {
             throw new IllegalArgumentException("Admission filter " + name + " needs a phase");
         }
+        RegisteredFilter registered = new RegisteredFilter(filter, name, filterPhase);
         synchronized (mutationLock) {
             checkAdditionAllowed();
-            for (AdmissionFilter existing : filterList) {
+            for (RegisteredFilter existing : filterList) {
+                if (existing.filter() == filter) {
+                    throw new IllegalStateException("Admission filter " + name + " is already registered");
+                }
                 if (name.equals(existing.name())) {
                     throw new IllegalStateException("An admission filter named " + name + " is already registered");
                 }
             }
-            filterList.add(filter);
-            publishOrderedFilters();
+            RegisteredFilter[] candidates = filterList.toArray(new RegisteredFilter[filterList.size() + 1]);
+            candidates[candidates.length - 1] = registered;
+            AdmissionFilter[] sorted = sortedFilters(candidates);
+            filterList.add(registered);
+            orderedFilters = sorted;
         }
-        LOG.log(System.Logger.Level.DEBUG, "Registered admission filter: {0} ({1})", filter.name(), filter.phase());
+        LOG.log(System.Logger.Level.DEBUG, "Registered admission filter: {0} ({1})", name, filterPhase);
     }
 
     @Override
@@ -261,19 +281,31 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         Objects.requireNonNull(filter, "filter");
         synchronized (mutationLock) {
             checkRemovalAllowed();
-            boolean removed = filterList.remove(filter);
-            if (removed) {
-                publishOrderedFilters();
+            for (int i = 0; i < filterList.size(); i++) {
+                if (filterList.get(i).filter().equals(filter)) {
+                    RegisteredFilter[] remaining = new RegisteredFilter[filterList.size() - 1];
+                    for (int k = 0, j = 0; k < filterList.size(); k++) {
+                        if (k != i) {
+                            remaining[j++] = filterList.get(k);
+                        }
+                    }
+                    orderedFilters = sortedFilters(remaining);
+                    filterList.remove(i);
+                    return true;
+                }
             }
-            return removed;
+            return false;
         }
     }
 
-    /** Must be called holding {@code mutationLock}, after {@code filterList} changed. */
-    private void publishOrderedFilters() {
-        AdmissionFilter[] sorted = filterList.toArray(NO_FILTERS);
-        Arrays.sort(sorted, FILTER_COMPARATOR);
-        orderedFilters = sorted;
+    /** Sorts the captured name and phase, never the live filters, and returns the filters in that order. */
+    private static AdmissionFilter[] sortedFilters(RegisteredFilter[] registered) {
+        Arrays.sort(registered, FILTER_COMPARATOR);
+        AdmissionFilter[] sorted = new AdmissionFilter[registered.length];
+        for (int i = 0; i < registered.length; i++) {
+            sorted[i] = registered[i].filter();
+        }
+        return sorted;
     }
 
     @Override
@@ -327,7 +359,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                                 "Admission filter {0} answered route {1} and returned true; admission ends",
                                 filter.getClass().getName(), routeMatch.route().pathPattern());
                     } else {
-                        LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.name());
+                        LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.getClass().getName());
                     }
                     return false;
                 }
@@ -339,7 +371,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                     return false;
                 }
             } catch (TenantConflictException ex) {
-                LOG.log(System.Logger.Level.DEBUG, "Tenant conflict in admission filter {0}", filter.name());
+                LOG.log(System.Logger.Level.DEBUG, "Tenant conflict in admission filter {0}", filter.getClass().getName());
                 if (!tracked.responded()) {
                     answer(tracked, HttpStatus.FORBIDDEN, null, "tenant conflict", routeMatch, null);
                 }
