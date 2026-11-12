@@ -26,7 +26,7 @@ class LiteralPathMatchingTest {
 
     // ---- the normalisation, restated from the README's description ------------------------------------------------
 
-    /** The path as the old pipeline cut it: everything before the first question mark. */
+    /** The reference path: everything before the first question mark. */
     private static String stripQuery(String path) {
         int q = path.indexOf('?');
         return q < 0 ? path : path.substring(0, q);
@@ -53,8 +53,8 @@ class LiteralPathMatchingTest {
         return result.toString();
     }
 
-    /** What the old code decided for a literal route: its matchesPath on the query-stripped path. */
-    private static boolean oldDecision(ApiSurfaceRoute route, String path) {
+    /** The reference decision for a literal route: its matchesPath on the query-stripped path. */
+    private static boolean referenceDecision(ApiSurfaceRoute route, String path) {
         String stripped = stripQuery(path);
         boolean viaRoute = route.matchesPath(stripped);
         boolean viaEquality = route.pathPattern().equals(normalised(stripped));
@@ -113,7 +113,7 @@ class LiteralPathMatchingTest {
     }
 
     @Test
-    @DisplayName("over 500000 seeded pattern and path pairs the registry decides as the old normalisation did")
+    @DisplayName("over 500000 seeded pattern and path pairs the registry decides as matchesPath does on the query-stripped path")
     void differentialAgainstOldNormalisation() {
         List<ApiSurfaceRoute> routes = new ArrayList<>();
         List<DefaultApiSurfaceRegistry> registries = new ArrayList<>();
@@ -131,7 +131,7 @@ class LiteralPathMatchingTest {
         for (int i = 0; i < pairs; i++) {
             int index = random.nextInt(PATTERNS.length);
             String path = randomPath(random, PATTERNS);
-            boolean expected = oldDecision(routes.get(index), path);
+            boolean expected = referenceDecision(routes.get(index), path);
             Optional<RouteMatch> actual = registries.get(index).matchRoute(HttpMethod.GET, path);
             assertThat(actual.isPresent()).as("pattern %s path %s", quote(routes.get(index).pathPattern()), quote(path))
                     .isEqualTo(expected);
@@ -147,7 +147,7 @@ class LiteralPathMatchingTest {
     }
 
     @Test
-    @DisplayName("over route pairs, one protected and one anonymous, a path selects the route the old normalisation selected")
+    @DisplayName("over route pairs, one protected and one anonymous, a path selects the route matchesPath selects on the query-stripped path")
     void protectedRouteNeverTradedForAnonymousOne() {
         List<String> pool = List.of("/admin", "/Admin", "/admin/x", "/", "/a b", "/admin%2F", "/admin/..", "/ü", "/.", "/public");
         Random random = new Random(7L);
@@ -171,8 +171,8 @@ class LiteralPathMatchingTest {
                 reversed.registerRoute(secured);
                 for (int i = 0; i < 4_000; i++) {
                     String path = randomPath(random, pool.toArray(new String[0]));
-                    ApiSurfaceRoute expected = oldDecision(secured, path) ? secured
-                            : oldDecision(anonymous, path) ? anonymous : null;
+                    ApiSurfaceRoute expected = referenceDecision(secured, path) ? secured
+                            : referenceDecision(anonymous, path) ? anonymous : null;
                     for (DefaultApiSurfaceRegistry candidate : List.of(registry, reversed)) {
                         Optional<RouteMatch> actual = candidate.matchRoute(HttpMethod.GET, path);
                         assertThat(actual.map(RouteMatch::route).orElse(null))
@@ -226,7 +226,7 @@ class LiteralPathMatchingTest {
             new Case("x?/health", false, false));
 
     @Test
-    @DisplayName("the named paths select the same route as the old normalisation and the 404 and 405 answers are unchanged")
+    @DisplayName("the named paths select the route matchesPath selects on the query-stripped path, with the documented 404 and 405 answers")
     void namedCases() {
         ApiSurfaceRoute health = Fixtures.open("/health");
         ApiSurfaceRoute root = Fixtures.open("/");
@@ -240,8 +240,8 @@ class LiteralPathMatchingTest {
             Optional<RouteMatch> match = registry.matchRoute(HttpMethod.GET, c.path());
             ApiSurfaceRoute expected = c.health() ? health : c.root() ? root : null;
             assertThat(match.map(RouteMatch::route).orElse(null)).as(quote(c.path())).isSameAs(expected);
-            assertThat(oldDecision(health, c.path())).as("old, health, " + quote(c.path())).isEqualTo(c.health());
-            assertThat(oldDecision(root, c.path())).as("old, root, " + quote(c.path())).isEqualTo(c.root());
+            assertThat(referenceDecision(health, c.path())).as("reference, health, " + quote(c.path())).isEqualTo(c.health());
+            assertThat(referenceDecision(root, c.path())).as("reference, root, " + quote(c.path())).isEqualTo(c.root());
 
             ScriptedExchange exchange = new ScriptedExchange(
                     eu.exeris.kernel.spi.http.HttpRequest.noBody(HttpMethod.GET, c.path(),
@@ -261,7 +261,7 @@ class LiteralPathMatchingTest {
     }
 
     @Test
-    @DisplayName("the 404, 405 and matched statuses over seeded paths equal the old pipeline's, with the same Allow header")
+    @DisplayName("the 404, 405 and matched statuses over seeded paths equal the reference decision's, with the same Allow header")
     void answersEqualTheOldPipeline() {
         ApiSurfaceRoute getHealth = Fixtures.route(HttpMethod.GET, "/health", List.of(RouteRequirement.permitAll()),
                 ex -> ex.respond(HttpStatus.OK));
