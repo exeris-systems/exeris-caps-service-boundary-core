@@ -17,6 +17,9 @@ import java.util.UUID;
  * synchronisation; it is bound through a {@link ScopedValue} and never escapes the request. The thread
  * that opens the context owns it, and every call from another thread is refused.
  *
+ * <p>The attribute map is allocated by the first write that changes it; a request whose filters set no
+ * attribute allocates none, and reading an empty one allocates nothing.
+ *
  * @since 0.1.0
  */
 public final class DefaultAdmissionContext implements AdmissionContext {
@@ -24,7 +27,12 @@ public final class DefaultAdmissionContext implements AdmissionContext {
     private static final ScopedValue<DefaultAdmissionContext> CURRENT = ScopedValue.newInstance();
 
     private final RequestContext seed;
-    private final Map<String, Object> attributes;
+    /**
+     * The attributes admission has established. Until the first write it is the seed's immutable map, which is
+     * shared and never modified; the first write that changes it replaces it with a private mutable copy.
+     */
+    private Map<String, Object> attributes;
+    private boolean attributesOwned;
     private final Thread owner = Thread.currentThread();
     private PrincipalContext principal;
     private UUID sessionId;
@@ -33,7 +41,7 @@ public final class DefaultAdmissionContext implements AdmissionContext {
 
     private DefaultAdmissionContext(RequestContext seed) {
         this.seed = Objects.requireNonNull(seed, "seed");
-        this.attributes = new LinkedHashMap<>(seed.attributes());
+        this.attributes = Map.copyOf(seed.attributes());
         this.principal = seed.principal().orElse(null);
         this.tenantId = seed.tenantId().orElse(null);
     }
@@ -103,9 +111,22 @@ public final class DefaultAdmissionContext implements AdmissionContext {
         Objects.requireNonNull(key, "key");
         requireOpen();
         if (value == null) {
+            if (!attributes.containsKey(key)) {
+                return;
+            }
+            ownAttributes();
             attributes.remove(key);
         } else {
+            ownAttributes();
             attributes.put(key, value);
+        }
+    }
+
+    /** Replaces the shared seed attributes with a private mutable copy that keeps their iteration order. */
+    private void ownAttributes() {
+        if (!attributesOwned) {
+            attributes = new LinkedHashMap<>(attributes);
+            attributesOwned = true;
         }
     }
 
