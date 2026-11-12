@@ -14,14 +14,17 @@ name: release
 #
 # WHAT EACH TRIGGER CAN DO
 #
-#   tag push    A rehearsal: the reusable workflow takes the version from the tag and refuses a tag
-#               that is not vMAJOR.MINOR.PATCH or is not on the default branch.
-#   dispatch    A rehearsal of the same build at the version typed, from any branch.
+#   tag push    A release: the reusable workflow takes the version from the tag, refuses a tag that
+#               is not vMAJOR.MINOR.PATCH, is not on the default branch or does not match the
+#               version in the POM, and then runs all four jobs. The files it gated are uploaded to
+#               GitHub Packages under this repository and attested. A released version cannot be
+#               uploaded again: the registry refuses it and the run fails.
+#   dispatch    A rehearsal of the same build at the version typed, from any branch: the build job
+#               only, with a throwaway signing key. Nothing leaves the runner.
 #
-# A rehearsal runs the build job only. `upload` and `target` are fixed below and no secret is
-# passed, so `publish`, `upload` and `attest` never run and nothing leaves the runner. Publishing is
-# a change to this file, made in review: it sets `target: github-packages`, sets `upload` and passes
-# the two signing secrets, `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE`.
+# `upload` is true for a tag push and false for a dispatch; it is not an input, so a dispatch cannot
+# upload. The two signing secrets are passed for both triggers and are read by `publish` alone,
+# which a rehearsal does not run.
 #
 # The permissions are the union of what the four jobs declare; GitHub rejects a caller that grants
 # less. The JDK is the reusable workflow's default, Temurin 25, which is the baseline this
@@ -50,7 +53,9 @@ jobs:
     uses: exeris-systems/.github/.github/workflows/caps-release.yml@main
     with:
       version: ${{ inputs.version }}
-      # Fixed, not inputs: this repository can only rehearse a release. Uploading needs a change to
-      # this file that sets a target and passes the release secrets, which is reviewed like any other.
-      upload: false
-      target: none
+      # Not inputs: only a tag push uploads, and only to GitHub Packages.
+      upload: ${{ github.event_name == 'push' }}
+      target: github-packages
+    secrets:
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
