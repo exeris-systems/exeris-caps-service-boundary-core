@@ -15,7 +15,9 @@ Status: proof of concept, built against `exeris-kernel` 0.13.1. The API is not s
 
 `ApiSurfaceRegistry` runs the registered `AdmissionFilter`s between route match and handler, ordered by
 `AdmissionPhase` (pre-admission, rate limiting, authentication, authorisation, post-admission) and then by
-name (ADR-099). Filter names are unique and non-blank; registering a duplicate is refused. Each filter
+name (ADR-099). Filter names are unique and non-blank; registering a duplicate is refused. A filter is
+removed by passing `unregisterFilter` the instance that was registered: an equal but different instance
+removes nothing, and the registry never calls `equals`, `hashCode` or `toString` of a filter. Each filter
 either passes the request on or answers it. A filter that verifies the caller records the principal
 through `AdmissionContext.current().authenticate(...)`, once per request, and the session it authenticated
 with through `authenticate(principal, sessionId)`. The handler runs inside the resulting `RequestContext`,

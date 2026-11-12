@@ -22,9 +22,10 @@ public interface RequestFilterChain {
     void registerFilter(AdmissionFilter filter);
 
     /**
-     * Unregisters a previously registered filter.
+     * Unregisters a previously registered filter. A filter is identified by reference: pass the same instance
+     * that was registered. An instance that is equal to it but is not the same one removes nothing.
      *
-     * @param filter filter to unregister; non-null
+     * @param filter filter to unregister, the instance that was registered; non-null
      * @return {@code true} if removed, {@code false} otherwise
      */
     boolean unregisterFilter(AdmissionFilter filter);
