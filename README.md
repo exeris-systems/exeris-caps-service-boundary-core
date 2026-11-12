@@ -53,6 +53,23 @@ the handler has no `AdmissionContext` and cannot change it.
   boundary before terminating any capability needs to do nothing more. A composition that terminates capabilities
   without draining the boundary, or terminates the boundary after them, calls `beginTeardown()` before
   terminating the first of them. Teardown is one-way: `ready()` after it throws.
+- **No matched exchange is left unanswered.** The registry does not rely on the kernel to complete an exchange
+  a filter or handler left open. It answers 500 (bare status, as the 404, 405 and 503 answers) when a filter
+  returns `false` without having responded, when the handler returns without having responded, and when a
+  filter or handler throws an `Exception`. When a filter or handler throws an `Error`, the registry answers
+  500 if the exchange is still unanswered and rethrows the same `Error`; for a `VirtualMachineError` (for
+  example `OutOfMemoryError`) it rethrows without attempting to answer. An exchange on which `respond` was
+  already called is never answered a second time, and a failure while answering an `Error` is attached to it as
+  suppressed. A denial through a filter that did respond, a 401 or 403 from a route requirement, and a 403 from
+  a tenant conflict are unchanged. The registry logs one WARNING for an unanswered filter or handler, naming
+  the route's path pattern and the class of the filter or handler, and no header or body value.
+- **A handler answers before it returns.** The kernel's `HttpHandler` contract is to call
+  `HttpExchange.respond` exactly once before returning, and this capability has no way for a handler to
+  answer later: a handler that returns first is answered 500, and an answer it writes afterwards is not
+  part of the contract. The same holds for a filter, which answers before it returns `false`.
+  The guarantee covers exchanges dispatched through `ApiSurfaceRegistry.handle()`; a host that drives
+  `RequestFilterChain.execute(...)` itself receives the same 500 for an unanswered `false`, and answers the
+  exchange itself after `execute` returns `true`.
 - **Unmatched requests skip admission.** A path or method that matches no route is answered 404 or 405
   before any filter runs, so rate limiting does not see them.
 

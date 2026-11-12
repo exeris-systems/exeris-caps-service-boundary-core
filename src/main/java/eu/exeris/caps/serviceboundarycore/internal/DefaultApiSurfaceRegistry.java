@@ -40,6 +40,12 @@ import java.util.regex.Pattern;
  * <p>After the filters, the route's {@link RouteRequirement}s are enforced against the admitted principal
  * before the handler runs; a request that does not satisfy them is answered 401 or 403.
  *
+ * <p>No matched exchange is left unanswered. A filter that returns {@code false} without responding, and a
+ * handler that returns without responding, are answered 500 by the registry; a filter or handler that throws
+ * an {@link Exception} is answered 500; one that throws an {@link Error} is answered 500 when still unanswered
+ * and the error is rethrown (a {@link VirtualMachineError} is rethrown without an attempt to answer). An
+ * exchange on which {@code respond} was already called is never answered again.
+ *
  * <p>The registry moves one way through three phases: {@code OPEN}, {@code FROZEN}, {@code TEARDOWN}
  * ({@code OPEN} may go straight to {@code TEARDOWN}). While {@code OPEN} routes and filters may be added and
  * removed. While {@code FROZEN} the service is serving and nothing may be added, replaced or removed. In
@@ -237,7 +243,14 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                         () -> DefaultRequestContext.bind(admission.requestContext(),
                                 () -> filter.filter(tracked, routeMatch)));
                 if (!proceed) {
-                    LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.name());
+                    if (tracked.responded()) {
+                        LOG.log(System.Logger.Level.DEBUG, "Filter {0} halted admission pipeline", filter.name());
+                    } else {
+                        LOG.log(System.Logger.Level.WARNING,
+                                "Admission filter {0} halted route {1} without answering; answering 500",
+                                filter.getClass().getName(), routeMatch.route().pathPattern());
+                        tracked.respond(HttpStatus.INTERNAL_SERVER_ERROR);
+                    }
                     return false;
                 }
             } catch (TenantConflictException ex) {
@@ -252,9 +265,59 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                     tracked.respond(HttpStatus.INTERNAL_SERVER_ERROR);
                 }
                 return false;
+            } catch (Error err) {
+                failOnError(err, tracked, "admission filter", filter.getClass().getName(), routeMatch);
+                throw err;
             }
         }
         return true;
+    }
+
+    /**
+     * Answers 500 for an exchange that is still unanswered when a filter or handler threw an {@link Error},
+     * after which the caller rethrows that same error. A {@link VirtualMachineError} is not answered: the
+     * JVM state is unreliable, answering could fail or hide the error, and the error is the signal that
+     * matters. A failure while answering is attached to the error as suppressed, never replacing it.
+     */
+    private static void failOnError(Error err, MatchedHttpExchange exchange, String stage, String componentClass,
+                                    RouteMatch routeMatch) {
+        if (err instanceof VirtualMachineError) {
+            return;
+        }
+        if (exchange.responded()) {
+            return;
+        }
+        LOG.log(System.Logger.Level.WARNING,
+                "Error in {0} {1} on route {2} before an answer; answering 500 and rethrowing",
+                stage, componentClass, routeMatch.route().pathPattern());
+        try {
+            exchange.respond(HttpStatus.INTERNAL_SERVER_ERROR);
+        } catch (RuntimeException answerFailure) {
+            err.addSuppressed(answerFailure);
+        }
+    }
+
+    /**
+     * Runs the route's handler inside the admitted context and guarantees the exchange is answered when it
+     * returns: a handler that returns without responding is answered 500. A handler answers before it returns;
+     * an answer written afterwards is not part of this contract.
+     */
+    private static void runHandler(RouteMatch match, MatchedHttpExchange exchange, RequestContext admitted) {
+        try {
+            DefaultRequestContext.bind(admitted, () -> {
+                match.route().handler().handle(exchange);
+                return null;
+            });
+        } catch (Error err) {
+            failOnError(err, exchange, "handler", match.route().handler().getClass().getName(), match);
+            throw err;
+        }
+        if (!exchange.responded()) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "Handler {0} returned on route {1} without answering; answering 500",
+                    match.route().handler().getClass().getName(), match.route().pathPattern());
+            exchange.respond(HttpStatus.INTERNAL_SERVER_ERROR);
+        }
     }
 
     @Override
@@ -337,10 +400,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
                     effectiveExchange.respond(denial);
                     return;
                 }
-                DefaultRequestContext.bind(admitted, () -> {
-                    match.route().handler().handle(effectiveExchange);
-                    return null;
-                });
+                runHandler(match, effectiveExchange, admitted);
             } catch (TenantConflictException ex) {
                 LOG.log(System.Logger.Level.DEBUG, "Tenant conflict in route processing", ex);
                 if (!effectiveExchange.responded()) {

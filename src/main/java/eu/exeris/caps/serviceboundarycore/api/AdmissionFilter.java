@@ -31,7 +31,9 @@ public interface AdmissionFilter {
      *
      * @param exchange incoming HTTP exchange
      * @param routeMatch matched route definition and extracted parameters
-     * @return {@code true} to proceed to the next filter/handler, or {@code false} if request handling was completed
+     * @return {@code true} to proceed to the next filter/handler, or {@code false} when the filter has
+     *         answered the exchange; a filter that returns {@code false} without having responded has the
+     *         exchange answered 500 by the registry
      */
     boolean filter(HttpExchange exchange, RouteMatch routeMatch);
 }
