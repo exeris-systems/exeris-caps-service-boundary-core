@@ -28,6 +28,11 @@ the handler has no `AdmissionContext` and cannot change it.
   capability reads the caller's session from.
 - **No implicit tenant.** `RequestContext.tenantId()` is empty until the host binds a tenant or an
   authenticated principal carries one.
+- **The correlation id is generated on first read.** A `RequestContext` built without a correlation id has
+  none until `correlationId()` is first called on it (or it is compared, hashed or printed); a request whose
+  correlation id nobody reads never generates one. The id is unpredictable (`UUID.randomUUID()`), and once it
+  exists every read on any thread returns the same value, as does every context admission derives for that
+  request. An id set through `RequestContext.builder().correlationId(...)` is returned as it is.
 - **Tenant conflict is refused.** When the host has already bound a tenant and the authenticated
   principal carries a different tenant, the request is refused with 403 (bare status, naming no tenant).
   Equal tenants, or a host with no bound tenant, keep normal admission.
