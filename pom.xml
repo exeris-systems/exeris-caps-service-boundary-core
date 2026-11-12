@@ -23,16 +23,33 @@
         <url>https://exeris.eu</url>
     </organization>
 
-    <!-- commercial per ADR-023 — source-available under the Exeris Commercial License.
-         Production use requires an active Platform SKU subscription or Platform-tier license.
-         Source is public for audit, evaluation, and Code Detachment fork purposes. -->
+    <!-- Commercial capability (ADR-023), source-available under the Exeris Commercial License:
+         the source may be read, built and evaluated; production use requires an active Platform
+         SKU subscription or Platform-tier licence. The URL names the LICENSE file of this
+         repository, which is the licence text the jar is distributed under. -->
     <licenses>
         <license>
             <name>Exeris Commercial License</name>
-            <url>https://exeris.eu/licenses/commercial-1.1.txt</url>
+            <url>https://github.com/exeris-systems/exeris-caps-service-boundary-core/blob/main/LICENSE</url>
             <distribution>repo</distribution>
         </license>
     </licenses>
+
+    <developers>
+        <developer>
+            <id>arkstack-dev</id>
+            <name>Arkadiusz Przychocki</name>
+            <email>oss@exeris.eu</email>
+            <organization>Exeris Systems</organization>
+            <organizationUrl>https://exeris.eu</organizationUrl>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/exeris-systems/exeris-caps-service-boundary-core.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/exeris-systems/exeris-caps-service-boundary-core.git</developerConnection>
+        <url>https://github.com/exeris-systems/exeris-caps-service-boundary-core</url>
+    </scm>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -146,5 +163,101 @@
             </plugin>
         </plugins>
     </build>
+
+    <!--
+        Everything a release needs, and NOTHING the ordinary build touches. Activated only by
+        `-P release`.
+
+        Sources and javadoc jars are attached here rather than in the main build because only a
+        release needs them, and a javadoc run is the slowest step of a build nobody publishes.
+        The release workflow's readiness gate requires both, and a detached signature on every
+        file of the coordinate.
+
+        The plugins are the ones the SDK and the kernel publish with, at the same versions, so one
+        release path serves all of them. No deployment plugin is configured: the release workflow
+        uploads the files it gated, and the POM needs no distributionManagement for that.
+    -->
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.3.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.12.0</version>
+                        <configuration>
+                            <!-- The JDK's own @apiNote, @implSpec and @implNote tags are not
+                                 registered for user code, and javadoc rejects an unregistered tag
+                                 as an error. They are registered here, with the headings the JDK's
+                                 own documentation gives them, rather than rewritten out of the
+                                 doc comments that use them. -->
+                            <tags>
+                                <tag>
+                                    <name>apiNote</name>
+                                    <placement>a</placement>
+                                    <head>API Note:</head>
+                                </tag>
+                                <tag>
+                                    <name>implSpec</name>
+                                    <placement>a</placement>
+                                    <head>Implementation Requirements:</head>
+                                </tag>
+                                <tag>
+                                    <name>implNote</name>
+                                    <placement>a</placement>
+                                    <head>Implementation Note:</head>
+                                </tag>
+                            </tags>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!--
+                        A detached GPG signature is made for every file of the coordinate: jar,
+                        sources, javadoc and pom. The passphrase arrives in the environment
+                        variable MAVEN_GPG_PASSPHRASE, which is the plugin's default name, so no
+                        passphrase or key id is configured here. `-Dgpg.skip=true` is the only way
+                        to build this profile without a key.
+                    -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.8</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>

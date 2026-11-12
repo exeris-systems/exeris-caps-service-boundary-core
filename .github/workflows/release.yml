@@ -1,0 +1,56 @@
+name: release
+
+# A tag is the release candidate and a dispatch is the dry run; both call the organisation's
+# reusable workflow, which holds the steps and says what each one holds and why.
+#
+# THE REUSABLE WORKFLOW HAS FOUR JOBS
+#
+#   build    Always runs. Builds with `-P release`, signs with a throwaway key generated in the job,
+#            runs every gate and keeps what it gated as a run artifact.
+#   publish  Runs only when `upload` is true and `target` is not `none`. Rebuilds and signs with the
+#            real key, from the two signing secrets, and stages the gated files.
+#   upload   The only job with `packages: write`. Sends the staged files to GitHub Packages.
+#   attest   Writes provenance for what was uploaded.
+#
+# WHAT EACH TRIGGER CAN DO
+#
+#   tag push    A rehearsal: the reusable workflow takes the version from the tag and refuses a tag
+#               that is not vMAJOR.MINOR.PATCH or is not on the default branch.
+#   dispatch    A rehearsal of the same build at the version typed, from any branch.
+#
+# A rehearsal runs the build job only. `upload` and `target` are fixed below and no secret is
+# passed, so `publish`, `upload` and `attest` never run and nothing leaves the runner. Publishing is
+# a change to this file, made in review: it sets `target: github-packages`, sets `upload` and passes
+# the two signing secrets, `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE`.
+#
+# The permissions are the union of what the four jobs declare; GitHub rejects a caller that grants
+# less. The JDK is the reusable workflow's default, Temurin 25, which is the baseline this
+# repository's build workflow compiles for.
+
+on:
+  push:
+    tags:
+      # Permissive on purpose: the strict check is a step in the reusable workflow, not this filter.
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build for a DRY RUN (e.g. 0.1.0), MAJOR.MINOR.PATCH, never -SNAPSHOT'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    uses: exeris-systems/.github/.github/workflows/caps-release.yml@main
+    with:
+      version: ${{ inputs.version }}
+      # Fixed, not inputs: this repository can only rehearse a release. Uploading needs a change to
+      # this file that sets a target and passes the release secrets, which is reviewed like any other.
+      upload: false
+      target: none
