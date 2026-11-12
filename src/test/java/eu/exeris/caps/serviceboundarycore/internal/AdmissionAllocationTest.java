@@ -106,9 +106,11 @@ class AdmissionAllocationTest {
             bytes[2] = bytesPerRequest(registryWithFilters(4), "Filters4Round" + round);
             double firstStep = bytes[1] - bytes[0];
             double perFilterOverTwo = (bytes[2] - bytes[1]) / 2.0;
-            System.out.printf("allocation round %d: 1 filter %.2f, 2 filters %.2f, 4 filters %.2f bytes/request; "
-                    + "per filter %.2f (1->2) and %.2f (2->4)%n", round, bytes[0], bytes[1], bytes[2],
-                    firstStep, perFilterOverTwo);
+            if (Boolean.getBoolean("boundary.alloc.print")) {
+                System.out.printf("allocation round %d: 1 filter %.2f, 2 filters %.2f, 4 filters %.2f bytes/request; "
+                        + "per filter %.2f (1->2) and %.2f (2->4)%n", round, bytes[0], bytes[1], bytes[2],
+                        firstStep, perFilterOverTwo);
+            }
             worstDisagreement = Math.max(worstDisagreement,
                     Math.abs(firstStep - perFilterOverTwo) / Math.min(firstStep, perFilterOverTwo));
         }

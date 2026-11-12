@@ -46,13 +46,14 @@ class DocumentationStatementsTest {
     class Readme {
 
         @Test
-        @DisplayName("admission ends when the exchange is answered, whatever the filter returned, with one WARNING for a true")
+        @DisplayName("admission ends when a respond was attempted, whatever the filter returned, with one WARNING for a true")
         void admissionEnds() throws IOException {
             String readme = normalised("README.md");
             assertThat(readme)
-                    .contains("After each filter returns, the registry reads whether the exchange has been answered.")
+                    .contains("After each filter returns, the registry reads whether a `respond` was attempted on the exchange.")
+                    .contains("If that attempt threw, the exchange is not answered and the registry answers 500 once.")
                     .contains("the remaining filters and the handler do not run, whatever the filter returned")
-                    .contains("a filter that answered and returned `true` is a contract violation and is logged once at WARNING")
+                    .contains("A filter that answered and returned `true` is a contract violation and is logged once at WARNING")
                     .contains("the exchange throws `IllegalStateException` before writing anything, and the registry adds no guard of its own");
         }
 

@@ -275,23 +275,20 @@ class AnsweringFailureMatrixTest {
         }
 
         @Test
-        @DisplayName("a denial that fails with an Error leaves handle() as that Error, unlogged and with nothing attached")
+        @DisplayName("a denial that fails with an Error is logged once by class name and handle() returns, since no Error is being handled")
         void deniedWithError() {
             routeWith(RouteRequirement.authenticated());
             AnsweringError error = new AnsweringError("write failed");
             ScriptedExchange exchange = ScriptedExchange.get(PATH).failOnRespondWith(error);
 
-            Throwable leaving = null;
-            try {
-                registry.handle(exchange);
-            } catch (Throwable t) {
-                leaving = t;
-            }
+            assertThatCode(() -> registry.handle(exchange)).doesNotThrowAnyException();
 
-            assertThat(leaving).isSameAs(error);
             assertThat(error.getSuppressed()).isEmpty();
             assertThat(exchange.statuses()).containsExactly(HttpStatus.UNAUTHORIZED);
-            assertThat(log.atOrAbove(Level.WARNING)).isEmpty();
+            assertThat(handlerRuns).isZero();
+            assertThat(recordsNaming(AnsweringError.class)).hasSize(1);
+            assertThat(log.at(Level.SEVERE)).hasSize(1);
+            assertThat(LogCapture.everything(log.at(Level.SEVERE).get(0))).doesNotContain("write failed");
         }
 
         @Test
@@ -311,7 +308,7 @@ class AnsweringFailureMatrixTest {
         }
 
         @Test
-        @DisplayName("a tenant-conflict 403 from a handler that fails to write leaves handle() as the write failure, unlogged")
+        @DisplayName("a tenant-conflict 403 from a handler that fails to write: handle() returns after one ERROR")
         void tenantConflictFromHandler() {
             registry.registerRoute(new ApiSurfaceRoute(HttpMethod.GET, PATH, "T#t",
                     List.of(RouteRequirement.permitAll()), ex -> {
@@ -319,20 +316,16 @@ class AnsweringFailureMatrixTest {
                     }));
             ScriptedExchange exchange = failing();
 
-            Throwable leaving = null;
-            try {
-                registry.handle(exchange);
-            } catch (Throwable t) {
-                leaving = t;
-            }
+            assertThatCode(() -> registry.handle(exchange)).doesNotThrowAnyException();
 
-            assertThat(leaving).isSameAs(failure);
             assertThat(exchange.statuses()).containsExactly(HttpStatus.FORBIDDEN);
-            assertThat(log.atOrAbove(Level.WARNING)).isEmpty();
+            assertThat(log.at(Level.SEVERE)).hasSize(1);
+            assertThat(LogCapture.everything(log.at(Level.SEVERE).get(0)))
+                    .contains(IllegalArgumentException.class.getName()).doesNotContain("write failed");
         }
 
         @Test
-        @DisplayName("a tenant-conflict 403 from a filter reached through execute() leaves execute as the write failure")
+        @DisplayName("a tenant-conflict 403 from a filter reached through execute() is logged once and execute returns false")
         void tenantConflictThroughExecute() {
             registry.registerFilter(new CountingFilter("conflict", AdmissionPhase.AUTHENTICATION, (ex, m) -> {
                 throw new TenantConflictException();
@@ -341,15 +334,12 @@ class AnsweringFailureMatrixTest {
             RouteMatch match = registry.matchRoute(HttpMethod.GET, PATH).orElseThrow();
             ScriptedExchange exchange = failing();
 
-            Throwable leaving = null;
-            try {
-                registry.execute(exchange, match);
-            } catch (Throwable t) {
-                leaving = t;
-            }
+            boolean proceed = registry.execute(exchange, match);
 
-            assertThat(leaving).isSameAs(failure);
+            assertThat(proceed).isFalse();
             assertThat(exchange.statuses()).containsExactly(HttpStatus.FORBIDDEN);
+            assertThat(handlerRuns).isZero();
+            assertThat(log.at(Level.SEVERE)).hasSize(1);
         }
 
         @Test
