@@ -202,9 +202,10 @@ class RegistrationDocumentationContractTest {
     void lateLiteralRouteSentences() throws IOException {
         assertThat(prose("ROADMAP.md"))
                 .contains("A literal route pays nothing only when it is registered before the parameterised routes.")
-                .contains("The match walks the routes in registration order, and every parameterised route scanned before "
-                        + "the match runs its pattern, so a literal route registered after parameterised routes pays for "
-                        + "scanning each of them; one registered before them stops the walk first.");
+                .contains("The match walks the routes in registration order, and every parameterised route of the same "
+                        + "HTTP method scanned before the match runs its pattern, so a literal route registered after "
+                        + "parameterised routes of its method pays for scanning each of them; one registered before "
+                        + "them stops the walk first.");
 
         for (boolean literalFirst : new boolean[] {true, false}) {
             DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
@@ -216,6 +217,11 @@ class RegistrationDocumentationContractTest {
             if (literalFirst) {
                 registry.registerRoute(literal);
             }
+            registry.registerRoute(Fixtures.route(HttpMethod.POST, "/api/{id}", List.of(RouteRequirement.permitAll()),
+                    ex -> {
+                        handled.add("other method");
+                        ex.respond(HttpStatus.OK);
+                    }));
             registry.registerRoute(Fixtures.open("/api/{id}", ex -> {
                 handled.add("parameterised");
                 ex.respond(HttpStatus.OK);
@@ -238,8 +244,9 @@ class RegistrationDocumentationContractTest {
     void notFoundAndMethodNotAllowedSentences() throws IOException {
         assertThat(prose("ROADMAP.md")).contains("The 404 and 405 answers allocate too: both build the set of allowed "
                 + "methods, and may cut a substring (when the request path has a query string) and run the pattern of "
-                + "each parameterised route; a 405 also builds the `Allow` value and the header list. Which of these "
-                + "the JIT removes varies, so this page does not count them.");
+                + "each parameterised route of any method, because the walk tests every route, literal ones included; "
+                + "a 405 also builds the `Allow` value and the header list. Which of these the JIT removes varies, so "
+                + "this page does not count them.");
 
         DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
         registry.registerRoute(Fixtures.route(HttpMethod.GET, "/items/{id}", List.of(RouteRequirement.permitAll()),
@@ -264,6 +271,12 @@ class RegistrationDocumentationContractTest {
         assertThat(allow(plain)).isEqualTo("GET, PUT");
         assertThat(allow(withQuery)).isEqualTo("GET, PUT");
         assertThat(allow(literal)).as("the literal path also matches the parameterised pattern").isEqualTo("GET, PUT, DELETE");
+        // the walk consults the routes of every method: a method no route serves is told all of them
+        ScriptedExchange otherMethod = ScriptedExchange.of(HttpMethod.PATCH, "/items/all", List.of());
+        registry.handle(otherMethod);
+        assertThat(otherMethod.statuses()).containsExactly(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(allow(otherMethod)).as("the GET and PUT parameterised routes and the literal DELETE route")
+                .isEqualTo("GET, PUT, DELETE");
         assertThat(missing.statuses()).containsExactly(HttpStatus.NOT_FOUND);
         assertThat(missingWithQuery.statuses()).containsExactly(HttpStatus.NOT_FOUND);
         assertThat(missing.responses()).as("a 404 carries no header list").allSatisfy(r -> assertThat(r).isNull());

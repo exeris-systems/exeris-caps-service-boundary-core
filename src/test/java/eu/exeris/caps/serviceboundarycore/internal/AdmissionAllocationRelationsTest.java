@@ -7,6 +7,7 @@ import eu.exeris.caps.serviceboundarycore.testsupport.Fixtures;
 import eu.exeris.kernel.spi.http.HttpExchange;
 import eu.exeris.kernel.spi.http.HttpMethod;
 import eu.exeris.kernel.spi.http.HttpRequest;
+import eu.exeris.kernel.spi.http.RouteRequirement;
 import eu.exeris.kernel.spi.http.HttpResponse;
 import eu.exeris.kernel.spi.http.HttpStatus;
 import eu.exeris.kernel.spi.http.HttpTypedResponse;
@@ -277,5 +278,70 @@ class AdmissionAllocationRelationsTest {
         double missingQuery = measure(registry, "/missing?x=1", "MissingQuery");
         report("404, 404 with a query string", missing, missingQuery);
         assertThat(missing).isGreaterThanOrEqualTo(0.0);
+    }
+
+    // ---- the roadmap's claim about which parameterised routes a request pays for ---------------------------------
+
+    private static final int PARAMETERISED = 4;
+
+    /** A literal GET route registered after {@code PARAMETERISED} parameterised routes of the given method. */
+    private static DefaultApiSurfaceRegistry literalAfterParameterised(HttpMethod parameterisedMethod, boolean literalFirst) {
+        DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
+        if (literalFirst) {
+            registry.registerRoute(Fixtures.open("/api/open"));
+        }
+        for (int i = 0; i < PARAMETERISED; i++) {
+            registry.registerRoute(Fixtures.route(parameterisedMethod, "/p" + i + "/{id}",
+                    List.of(RouteRequirement.permitAll()), Fixtures.ok()));
+        }
+        if (!literalFirst) {
+            registry.registerRoute(Fixtures.open("/api/open"));
+        }
+        registry.freeze();
+        return registry;
+    }
+
+    @Test
+    @DisplayName("(v) ROADMAP: parameterised routes of another HTTP method registered before a literal route add nothing to its "
+            + "request; those of the same method do; registered after it they add nothing")
+    void onlyParameterisedRoutesOfTheSameMethodAreScanned() throws Exception {
+        DefaultApiSurfaceRegistry bare = literalRegistry();
+        DefaultApiSurfaceRegistry otherMethod = literalAfterParameterised(HttpMethod.POST, false);
+        DefaultApiSurfaceRegistry sameMethod = literalAfterParameterised(HttpMethod.GET, false);
+        DefaultApiSurfaceRegistry sameMethodAfter = literalAfterParameterised(HttpMethod.GET, true);
+        for (DefaultApiSurfaceRegistry registry : List.of(bare, otherMethod, sameMethod, sameMethodAfter)) {
+            steady(registry, "/api/open", "WarmScan");
+        }
+        for (int round = 0; round < 3; round++) {
+            double base = measure(bare, "/api/open", "ScanBare" + round);
+            double other = measure(otherMethod, "/api/open", "ScanOther" + round);
+            double same = measure(sameMethod, "/api/open", "ScanSame" + round);
+            double after = measure(sameMethodAfter, "/api/open", "ScanAfter" + round);
+            report("literal alone, after " + PARAMETERISED + " parameterised routes of another method, of the same method, "
+                    + "before them (round " + round + ")", base, other, same, after);
+            assertThat(other - base).as("another method adds nothing").isBetween(-ONE_BYTE, ONE_BYTE);
+            assertThat(same - base).as("the same method adds an allocation per route scanned").isGreaterThan(ONE_BYTE);
+            assertThat(after - base).as("registered before them, the walk stops first").isBetween(-ONE_BYTE, ONE_BYTE);
+        }
+    }
+
+    @Test
+    @DisplayName("(vi) ROADMAP: the 404 walk runs the pattern of parameterised routes of every method")
+    void notFoundWalkConsultsRoutesOfEveryMethod() throws Exception {
+        DefaultApiSurfaceRegistry bare = literalRegistry();
+        DefaultApiSurfaceRegistry otherMethod = literalAfterParameterised(HttpMethod.POST, false);
+        DefaultApiSurfaceRegistry sameMethod = literalAfterParameterised(HttpMethod.GET, false);
+        for (DefaultApiSurfaceRegistry registry : List.of(bare, otherMethod, sameMethod)) {
+            steady(registry, "/nothing/here", "WarmNotFound");
+        }
+        for (int round = 0; round < 3; round++) {
+            double base = measure(bare, "/nothing/here", "NotFoundBare" + round);
+            double other = measure(otherMethod, "/nothing/here", "NotFoundOther" + round);
+            double same = measure(sameMethod, "/nothing/here", "NotFoundSame" + round);
+            report("404 with the literal alone, with " + PARAMETERISED + " parameterised routes of another method, of the "
+                    + "same method (round " + round + ")", base, other, same);
+            assertThat(other - base).as("a parameterised route of another method is still tested").isGreaterThan(ONE_BYTE);
+            assertThat(same - base).as("a parameterised route of the same method is tested").isGreaterThan(ONE_BYTE);
+        }
     }
 }

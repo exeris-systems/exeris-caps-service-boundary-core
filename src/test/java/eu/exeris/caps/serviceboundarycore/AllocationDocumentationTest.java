@@ -68,7 +68,7 @@ class AllocationDocumentationTest {
                 .contains("at least one, because the handler runs in it")
                 .contains("and another for each filter that runs after an earlier filter changed the state")
                 .contains("A correlation id costs a `SecureRandom` draw, a `UUID` and its string at the first read, by design")
-                .contains("each parameterised route scanned before the match costs again, so the cost grows with the number of routes");
+                .contains("each parameterised route of the same HTTP method scanned before the match costs again, so the cost grows with the number of routes");
     }
 
     @Test
