@@ -68,7 +68,15 @@ class AllocationDocumentationTest {
                 .contains("at least one, because the handler runs in it")
                 .contains("and another for each filter that runs after an earlier filter changed the state")
                 .contains("A correlation id costs a `SecureRandom` draw, a `UUID` and its string at the first read, by design")
-                .contains("each parameterised route of the same HTTP method scanned before the match costs again, so the cost grows with the number of routes");
+                .contains("A literal route does not pay for parameterised routes: the registry tries the routes without parameters first, "
+                        + "so a request for one never tests a parameterised route, whatever the registration order.")
+                .contains("A route with path parameters that matches allocates more: one `String` for each distinct parameter name, because "
+                        + "the request path is a `String` and `RouteMatch` exposes a `Map<String, String>`, and one immutable map that holds "
+                        + "them (the map object and, from two parameters on, its table array), which `RouteMatch` and `MatchedHttpExchange` "
+                        + "accept without a copy.")
+                .contains("A route with more than four distinct parameter names builds its map from entries and allocates more.")
+                .contains("A parameterised route that does not match allocates nothing, and none of the matching uses a regular expression.")
+                .contains("Closing the rest needs a path-parameter holder that is lent rather than copied, and an index from the path to the route.");
     }
 
     @Test
