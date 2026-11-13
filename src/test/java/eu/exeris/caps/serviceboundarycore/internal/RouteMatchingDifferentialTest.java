@@ -38,7 +38,9 @@ class RouteMatchingDifferentialTest {
     private static final int PATHS_PER_PATTERN = 100;
     private static final long PAIRS = (long) CHUNKS * PATTERNS_PER_CHUNK * PATHS_PER_PATTERN;
     private static final int SAMPLES_PER_KIND = 6;
-    /** A pattern whose literal text ends with a high surrogate before a parameter or begins with a low one after it. */
+    private static final long HALF_PAIR_MINIMUM = 100_000L;
+    private static final long HALF_PAIR_MATCHED_MINIMUM = 10_000L;
+    /** A pattern with a literal text that ends with a high surrogate before a parameter or begins with a low one after it. */
     private static final java.util.regex.Pattern HALF_PAIR_AT_PARAMETER = java.util.regex.Pattern.compile(
             "[\\uD800-\\uDBFF]\\{[a-zA-Z0-9_]+\\}|\\{[a-zA-Z0-9_]+\\}[\\uDC00-\\uDFFF]");
 
@@ -48,12 +50,13 @@ class RouteMatchingDifferentialTest {
         final LongAdder matchedWithParameters = new LongAdder();
         final LongAdder matchedWithSeveralParameters = new LongAdder();
         final LongAdder matchedRegistry = new LongAdder();
+        final LongAdder halfPairAtParameter = new LongAdder();
+        final LongAdder halfPairAtParameterMatched = new LongAdder();
         final LongAdder shortLived = new LongAdder();
         final Map<String, LongAdder> disagreements = new ConcurrentHashMap<>();
         final Map<String, ConcurrentLinkedQueue<String>> samples = new ConcurrentHashMap<>();
 
         void disagree(String kind, String pattern, String path, String expected, String actual) {
-            kind = (HALF_PAIR_AT_PARAMETER.matcher(pattern).find() ? "[pattern splits a pair at a parameter] " : "[other] ") + kind;
             disagreements.computeIfAbsent(kind, k -> new LongAdder()).increment();
             ConcurrentLinkedQueue<String> queue = samples.computeIfAbsent(kind, k -> new ConcurrentLinkedQueue<>());
             if (queue.size() < SAMPLES_PER_KIND) {
@@ -93,9 +96,13 @@ class RouteMatchingDifferentialTest {
         DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
         registry.registerRoute(route);
 
+        boolean halfPair = HALF_PAIR_AT_PARAMETER.matcher(reference.normalisedPattern()).find();
         for (int k = 0; k < PATHS_PER_PATTERN; k++) {
             String path = generator.path(pattern);
             tally.pairs.increment();
+            if (halfPair) {
+                tally.halfPairAtParameter.increment();
+            }
 
             // the route on the whole string, as given
             Map<String, String> expected = reference.parameters(path);
@@ -112,6 +119,9 @@ class RouteMatchingDifferentialTest {
             }
             if (expected != null) {
                 tally.matched.increment();
+                if (halfPair) {
+                    tally.halfPairAtParameterMatched.increment();
+                }
                 if (!reference.names().isEmpty()) {
                     tally.matchedWithParameters.increment();
                 }
@@ -169,7 +179,9 @@ class RouteMatchingDifferentialTest {
         System.out.println("differential: " + tally.pairs.sum() + " pairs compared, " + tally.matched.sum()
                 + " matched the reference pattern (" + tally.matchedWithParameters.sum() + " of them with parameters, "
                 + tally.matchedWithSeveralParameters.sum() + " with several), " + tally.matchedRegistry.sum()
-                + " served through the registry, " + tally.shortLived.sum() + " refused by the exchange");
+                + " served through the registry, " + tally.shortLived.sum() + " refused by the exchange; "
+                + tally.halfPairAtParameter.sum() + " pairs have a pattern with half a surrogate pair next to a parameter, "
+                + tally.halfPairAtParameterMatched.sum() + " of them matching");
         if (!tally.disagreements.isEmpty()) {
             System.out.println("differential disagreements:" + tally.report());
         }
@@ -187,19 +199,15 @@ class RouteMatchingDifferentialTest {
         assertThat(tally.pairs.sum() - tally.matched.sum()).as("pairs that do not match").isGreaterThan(500_000L);
         assertThat(tally.matchedRegistry.sum()).as("pairs served through the registry").isGreaterThan(500_000L);
         assertThat(tally.shortLived.sum()).as("paths the exchange refused").isZero();
+        assertThat(tally.halfPairAtParameter.sum()).as("pairs whose pattern has half a surrogate pair next to a parameter")
+                .isGreaterThan(HALF_PAIR_MINIMUM);
+        assertThat(tally.halfPairAtParameterMatched.sum()).as("such pairs that match").isGreaterThan(HALF_PAIR_MATCHED_MINIMUM);
     }
 
     @Test
     @DisplayName("through the route and through the registry: the same decision and the same parameters as the reference pattern, for every pair")
     void routeAndRegistryAgreeWithTheReferencePattern() {
         assertThat(run().disagreements.keySet()).as("kinds of disagreement with the reference pattern, listed above").isEmpty();
-    }
-
-    @Test
-    @DisplayName("through the route and through the registry: the same as the reference pattern for every pair whose pattern keeps a surrogate pair whole at each parameter")
-    void agreementWherePatternsKeepPairsWhole() {
-        assertThat(run().disagreements.keySet()).as("kinds of disagreement outside patterns that split a pair at a parameter")
-                .allSatisfy(kind -> assertThat(kind).startsWith("[pattern splits a pair at a parameter]"));
     }
 
     // ---- what the constructor refuses -------------------------------------------------------------------------
