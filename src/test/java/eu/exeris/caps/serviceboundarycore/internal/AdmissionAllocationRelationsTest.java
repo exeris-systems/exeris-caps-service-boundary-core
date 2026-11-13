@@ -4,6 +4,7 @@ import eu.exeris.caps.serviceboundarycore.api.AdmissionContext;
 import eu.exeris.caps.serviceboundarycore.api.AdmissionPhase;
 import eu.exeris.caps.serviceboundarycore.api.RequestContext;
 import eu.exeris.caps.serviceboundarycore.testsupport.Fixtures;
+import eu.exeris.caps.serviceboundarycore.testsupport.ScriptedExchange;
 import eu.exeris.kernel.spi.http.HttpExchange;
 import eu.exeris.kernel.spi.http.HttpMethod;
 import eu.exeris.kernel.spi.http.HttpRequest;
@@ -220,52 +221,38 @@ class AdmissionAllocationRelationsTest {
         }
     }
 
-    @Test
-    @DisplayName("finding: the literal request with parameterised routes registered before it, with and without a query string")
-    void literalFigureWithParameterisedRoutesRegisteredBeforeIt() throws Exception {
-        for (int n : new int[] {0, 5, 20}) {
-            steady(literalWithParameterised(n, false), "/api/open", "WarmBefore" + n);
+    /** Parameterised routes that the request {@code /items/7} reaches the parameter of and then fails on. */
+    private static DefaultApiSurfaceRegistry itemsAfterMisses(int misses) {
+        DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
+        for (int i = 0; i < misses; i++) {
+            registry.registerRoute(Fixtures.open("/items/{id}/p" + i));
         }
-        double none = measure(literalWithParameterised(0, false), "/api/open", "Before0");
-        double five = measure(literalWithParameterised(5, false), "/api/open", "Before5");
-        double twenty = measure(literalWithParameterised(20, false), "/api/open", "Before20");
-        double twentyQuery = measure(literalWithParameterised(20, false), "/api/open?x=1", "Before20Query");
-        report("FINDING literal registered last, after 0, 5, 20 parameterised routes; 20 with a query string", none, five, twenty,
-                twentyQuery);
-        // Not asserted: whether a literal request pays for the parameterised scan is the finding itself.
-        assertThat(none).isPositive();
+        registry.registerRoute(Fixtures.open("/items/{id}"));
+        registry.freeze();
+        return registry;
     }
 
     @Test
-    @DisplayName("roadmap: a request for a parameterised route allocates more, and more for each parameterised route scanned before it")
-    void parameterisedRoutesCostMoreAndGrowWithTheScan() throws Exception {
+    @DisplayName("roadmap: a request for a parameterised route allocates more than one for a literal route, and the same however many parameterised routes it tested and missed before")
+    void parameterisedHitCostsMoreAndIgnoresMissedRoutes() throws Exception {
         DefaultApiSurfaceRegistry literal = literalRegistry();
         steady(literal, "/api/open", "WarmLiteralBase");
-        for (int n : new int[] {0, 5, 20}) {
-            DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
-            for (int i = 0; i < n; i++) {
-                registry.registerRoute(Fixtures.open("/p" + i + "/{id}"));
-            }
-            registry.registerRoute(Fixtures.open("/items/{id}"));
-            registry.freeze();
-            steady(registry, "/items/7", "WarmParam" + n);
-        }
-        double literalBytes = measure(literal, "/api/open", "LiteralBase");
-        double[] bytes = new double[3];
         int[] counts = {0, 5, 20};
-        for (int k = 0; k < counts.length; k++) {
-            DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
-            for (int i = 0; i < counts[k]; i++) {
-                registry.registerRoute(Fixtures.open("/p" + i + "/{id}"));
-            }
-            registry.registerRoute(Fixtures.open("/items/{id}"));
-            registry.freeze();
-            bytes[k] = measure(registry, "/items/7", "Param" + counts[k]);
+        for (int n : counts) {
+            steady(itemsAfterMisses(n), "/items/7", "WarmParam" + n);
         }
-        report("literal; parameterised route after 0, 5, 20 other parameterised routes", literalBytes, bytes[0], bytes[1], bytes[2]);
-        assertThat(bytes[0]).isGreaterThan(literalBytes);
-        assertThat(bytes[1]).isGreaterThan(bytes[0]);
-        assertThat(bytes[2]).isGreaterThan(bytes[1]);
+        for (int round = 0; round < 3; round++) {
+            double literalBytes = measure(literal, "/api/open", "LiteralBase" + round);
+            double[] bytes = new double[counts.length];
+            for (int k = 0; k < counts.length; k++) {
+                bytes[k] = measure(itemsAfterMisses(counts[k]), "/items/7", "Param" + counts[k] + "R" + round);
+            }
+            report("literal; parameterised hit after 0, 5, 20 missed parameterised routes (round " + round + ")",
+                    literalBytes, bytes[0], bytes[1], bytes[2]);
+            assertThat(bytes[0]).as("a parameterised hit allocates its values and map").isGreaterThan(literalBytes + ONE_BYTE);
+            assertThat(bytes[1] - bytes[0]).as("5 missed routes add nothing").isBetween(-ONE_BYTE, ONE_BYTE);
+            assertThat(bytes[2] - bytes[0]).as("20 missed routes add nothing").isBetween(-ONE_BYTE, ONE_BYTE);
+        }
     }
 
     @Test
@@ -280,12 +267,12 @@ class AdmissionAllocationRelationsTest {
         assertThat(missing).isGreaterThanOrEqualTo(0.0);
     }
 
-    // ---- the roadmap's claim about which parameterised routes a request pays for ---------------------------------
+    // ---- what parameterised routes registered beside a literal route or a missing path cost --------------------
 
     private static final int PARAMETERISED = 4;
 
-    /** A literal GET route registered after {@code PARAMETERISED} parameterised routes of the given method. */
-    private static DefaultApiSurfaceRegistry literalAfterParameterised(HttpMethod parameterisedMethod, boolean literalFirst) {
+    /** A literal GET route and {@code PARAMETERISED} parameterised routes of the given method, in the given order. */
+    private static DefaultApiSurfaceRegistry literalBesideParameterised(HttpMethod parameterisedMethod, boolean literalFirst) {
         DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
         if (literalFirst) {
             registry.registerRoute(Fixtures.open("/api/open"));
@@ -302,13 +289,12 @@ class AdmissionAllocationRelationsTest {
     }
 
     @Test
-    @DisplayName("(v) ROADMAP: parameterised routes of another HTTP method registered before a literal route add nothing to its "
-            + "request; those of the same method do; registered after it they add nothing")
-    void onlyParameterisedRoutesOfTheSameMethodAreScanned() throws Exception {
+    @DisplayName("ROADMAP: a literal route's request allocates the same whatever parameterised routes, of any HTTP method, are registered before or after it")
+    void parameterisedRoutesAddNothingToALiteralRequest() throws Exception {
         DefaultApiSurfaceRegistry bare = literalRegistry();
-        DefaultApiSurfaceRegistry otherMethod = literalAfterParameterised(HttpMethod.POST, false);
-        DefaultApiSurfaceRegistry sameMethod = literalAfterParameterised(HttpMethod.GET, false);
-        DefaultApiSurfaceRegistry sameMethodAfter = literalAfterParameterised(HttpMethod.GET, true);
+        DefaultApiSurfaceRegistry otherMethod = literalBesideParameterised(HttpMethod.POST, false);
+        DefaultApiSurfaceRegistry sameMethod = literalBesideParameterised(HttpMethod.GET, false);
+        DefaultApiSurfaceRegistry sameMethodAfter = literalBesideParameterised(HttpMethod.GET, true);
         for (DefaultApiSurfaceRegistry registry : List.of(bare, otherMethod, sameMethod, sameMethodAfter)) {
             steady(registry, "/api/open", "WarmScan");
         }
@@ -319,18 +305,18 @@ class AdmissionAllocationRelationsTest {
             double after = measure(sameMethodAfter, "/api/open", "ScanAfter" + round);
             report("literal alone, after " + PARAMETERISED + " parameterised routes of another method, of the same method, "
                     + "before them (round " + round + ")", base, other, same, after);
-            assertThat(other - base).as("another method adds nothing").isBetween(-ONE_BYTE, ONE_BYTE);
-            assertThat(same - base).as("the same method adds an allocation per route scanned").isGreaterThan(ONE_BYTE);
-            assertThat(after - base).as("registered before them, the walk stops first").isBetween(-ONE_BYTE, ONE_BYTE);
+            assertThat(other - base).as("another method, registered before").isBetween(-ONE_BYTE, ONE_BYTE);
+            assertThat(same - base).as("the same method, registered before").isBetween(-ONE_BYTE, ONE_BYTE);
+            assertThat(after - base).as("registered after").isBetween(-ONE_BYTE, ONE_BYTE);
         }
     }
 
     @Test
-    @DisplayName("(vi) ROADMAP: the 404 walk runs the pattern of parameterised routes of every method")
-    void notFoundWalkConsultsRoutesOfEveryMethod() throws Exception {
+    @DisplayName("ROADMAP: the 404 walk allocates the same with parameterised routes of any HTTP method as without, and still consults the routes of every method")
+    void notFoundWalkAllocatesNothingForParameterisedRoutes() throws Exception {
         DefaultApiSurfaceRegistry bare = literalRegistry();
-        DefaultApiSurfaceRegistry otherMethod = literalAfterParameterised(HttpMethod.POST, false);
-        DefaultApiSurfaceRegistry sameMethod = literalAfterParameterised(HttpMethod.GET, false);
+        DefaultApiSurfaceRegistry otherMethod = literalBesideParameterised(HttpMethod.POST, false);
+        DefaultApiSurfaceRegistry sameMethod = literalBesideParameterised(HttpMethod.GET, false);
         for (DefaultApiSurfaceRegistry registry : List.of(bare, otherMethod, sameMethod)) {
             steady(registry, "/nothing/here", "WarmNotFound");
         }
@@ -340,8 +326,179 @@ class AdmissionAllocationRelationsTest {
             double same = measure(sameMethod, "/nothing/here", "NotFoundSame" + round);
             report("404 with the literal alone, with " + PARAMETERISED + " parameterised routes of another method, of the "
                     + "same method (round " + round + ")", base, other, same);
-            assertThat(other - base).as("a parameterised route of another method is still tested").isGreaterThan(ONE_BYTE);
-            assertThat(same - base).as("a parameterised route of the same method is tested").isGreaterThan(ONE_BYTE);
+            assertThat(other - base).as("parameterised routes of another method").isBetween(-ONE_BYTE, ONE_BYTE);
+            assertThat(same - base).as("parameterised routes of the same method").isBetween(-ONE_BYTE, ONE_BYTE);
+        }
+        // the walk consults the routes of every method: a path only a POST route with parameters serves is a 405
+        ScriptedExchange postOnly = ScriptedExchange.get("/p2/7");
+        literalBesideParameterised(HttpMethod.POST, false).handle(postOnly);
+        assertThat(postOnly.statuses()).containsExactly(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(postOnly.responses().get(0).headers()).anySatisfy(h -> {
+            assertThat(h.name()).isEqualToIgnoringCase("Allow");
+            assertThat(h.value()).isEqualTo("POST");
+        });
+        ScriptedExchange nowhere = ScriptedExchange.get("/nothing/here");
+        literalBesideParameterised(HttpMethod.POST, false).handle(nowhere);
+        assertThat(nowhere.statuses()).containsExactly(HttpStatus.NOT_FOUND);
+    }
+
+    // ---- what matching itself allocates ---------------------------------------------------------------------------
+
+    private static boolean sink;
+
+    private static double measureMatching(java.util.function.Supplier<Object> work, String label) throws Exception {
+        JfrAllocationMonitor.Config config = new JfrAllocationMonitor.Config(
+                "serviceboundarycore", label, WARMUP, MEASURED, JfrAllocationMonitor.Contract.unspecified());
+        JfrAllocationMonitor.Result result = JfrAllocationMonitor.measure(config, iterations -> {
+            boolean seen = false;
+            for (int i = 0; i < iterations; i++) {
+                seen ^= work.get() == null;
+            }
+            sink = seen;
+        });
+        assertThat(result.allocatedBytesDelta()).isNotEqualTo(JfrAllocationMonitor.ALLOCATED_BYTES_UNAVAILABLE);
+        return (double) result.allocatedBytesDelta() / result.hotPathIterations();
+    }
+
+    @Test
+    @DisplayName("ROADMAP: a parameterised route that does not match allocates nothing, whether it fails on its literal text, on a parameter or at the end")
+    void parameterisedMissAllocatesNothing() throws Exception {
+        PathPattern pattern = new PathPattern("/items/{id}/parts/{part}x");
+        String[] misses = {"/other/7/parts/b", "/items//parts/b", "/items/7/parts/", "/items/7/parts/bb", "/items/7/parts/b/",
+                "/items/7/parts/\uD83D\uDE00y", "/items/7", "/items/7?/parts/bx", " /items/7/parts/by?x=1 "};
+        for (String path : misses) {
+            assertThat(pattern.matches(path, path.indexOf('?') >= 0 ? path.indexOf('?') : path.length())).as(path).isFalse();
+        }
+        for (int round = 0; round < 3; round++) {
+            double[] figures = new double[misses.length];
+            for (int i = 0; i < misses.length; i++) {
+                String path = misses[i];
+                int end = path.indexOf('?') >= 0 ? path.indexOf('?') : path.length();
+                figures[i] = Math.max(measureMatching(() -> pattern.match(path, end), "MissMatch" + i + "R" + round),
+                        measureMatching(() -> pattern.matches(path, end) ? "hit" : null, "MissMatches" + i + "R" + round));
+            }
+            report("a miss of match() and of matches(), nine paths (round " + round + ")", figures);
+            for (int i = 0; i < misses.length; i++) {
+                assertThat(figures[i]).as("a miss for %s", misses[i]).isLessThan(ONE_BYTE);
+            }
+        }
+        PathPattern adjacent = new PathPattern("/{a}{b}{c}x");
+        for (int round = 0; round < 3; round++) {
+            double figure = measureMatching(() -> adjacent.match("/aaaaaaaaaaaa", 13), "MissAdjacent" + round);
+            report("a miss of three adjacent parameters (round " + round + ")", figure);
+            assertThat(figure).isLessThan(ONE_BYTE);
+        }
+    }
+
+    @Test
+    @DisplayName("ROADMAP: a miss that the surrogate pair boundary decides allocates nothing, and a hit across pairs allocates what a hit of two-character values outside Latin-1 does")
+    void surrogateBoundaryMissAllocatesNothing() throws Exception {
+        String h = "\uD83D";
+        String l = "\uDE00";
+        String[][] misses = {
+                {"/{a}" + l, "/" + h + l},
+                {"/" + h + "{a}", "/" + h + l + "x"},
+                {"/{a}{b}", "/" + h + l},
+                {"/{a}" + h + "{b}", "/x" + h + l},
+                {"/{a}" + l + "{b}", "/x" + h + l + "y"},
+                {"/{a}/{b}" + l, "/x/" + h + l}};
+        for (int round = 0; round < 3; round++) {
+            double[] figures = new double[misses.length];
+            for (int i = 0; i < misses.length; i++) {
+                PathPattern pattern = new PathPattern(misses[i][0]);
+                String path = misses[i][1];
+                assertThat(pattern.matches(path, path.length())).as("%s against %s", misses[i][0], path).isFalse();
+                figures[i] = Math.max(measureMatching(() -> pattern.match(path, path.length()), "PairMiss" + i + "R" + round),
+                        measureMatching(() -> pattern.matches(path, path.length()) ? "hit" : null, "PairMisses" + i + "R" + round));
+                assertThat(figures[i]).as("a miss for %s against %s", misses[i][0], path).isLessThan(ONE_BYTE);
+            }
+            report("a miss decided by a surrogate pair boundary, six patterns (round " + round + ")", figures);
+        }
+        PathPattern plain = new PathPattern("/{a}/{b}");
+        for (int round = 0; round < 3; round++) {
+            double ascii = measureMatching(() -> plain.match("/\u0141\u0142/\u0143\u0144", 6), "HitAsciiR" + round);
+            double pairs = measureMatching(() -> plain.match("/" + "\uD83D\uDE00" + "/" + "\uD83D\uDE00", 6), "HitPairsR" + round);
+            report("a hit of two values, two BMP characters each and a pair each (round " + round + ")", ascii, pairs);
+            assertThat(pairs - ascii).as("values of two chars outside Latin-1, as BMP characters and as pairs").isBetween(-ONE_BYTE, ONE_BYTE);
+        }
+    }
+
+    private static DefaultApiSurfaceRegistry registryOf(String pattern) {
+        DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
+        registry.registerRoute(Fixtures.open(pattern));
+        registry.freeze();
+        return registry;
+    }
+
+    @Test
+    @DisplayName("ROADMAP: a parameterised hit allocates more for each distinct parameter name, and a repeated name counts once")
+    void parameterisedHitGrowsWithDistinctNames() throws Exception {
+        String[] patterns = {"/a/{p0}", "/a/{p0}/{p1}", "/a/{p0}/{p1}/{p2}", "/a/{p0}/{p1}/{p2}/{p3}", "/a/{p0}/{p1}/{p2}/{p3}/{p4}",
+                "/a/{p0}/{p1}/{p2}/{p3}/{p4}/{p5}"};
+        String[] paths = {"/a/v", "/a/v/v", "/a/v/v/v", "/a/v/v/v/v", "/a/v/v/v/v/v", "/a/v/v/v/v/v/v"};
+        for (int k = 0; k < patterns.length; k++) {
+            steady(registryOf(patterns[k]), paths[k], "WarmNames" + k);
+        }
+        steady(registryOf("/a/{p}/{p}"), "/a/v/w", "WarmRepeated");
+        steady(registryOf("/a/{p}"), "/a/w", "WarmOnce");
+        for (int round = 0; round < 3; round++) {
+            double[] bytes = new double[patterns.length];
+            for (int k = 0; k < patterns.length; k++) {
+                bytes[k] = measure(registryOf(patterns[k]), paths[k], "Names" + (k + 1) + "R" + round);
+            }
+            double repeated = measure(registryOf("/a/{p}/{p}"), "/a/v/w", "RepeatedR" + round);
+            double once = measure(registryOf("/a/{p}"), "/a/w", "OnceR" + round);
+            report("1 to 6 distinct names (round " + round + ")", bytes);
+            report("a name used twice, the same name used once (round " + round + ")", repeated, once);
+            for (int k = 1; k < bytes.length; k++) {
+                assertThat(bytes[k]).as("%d distinct names allocate more than %d", k + 1, k).isGreaterThan(bytes[k - 1] + ONE_BYTE);
+            }
+            assertThat(repeated - once).as("a repeated name is read once").isBetween(-ONE_BYTE, ONE_BYTE);
+        }
+    }
+
+    @Test
+    @DisplayName("ROADMAP: a query string, a trailing slash or surrounding white space adds nothing to a parameterised hit")
+    void queryAndTrailingSlashAddNothingToAParameterisedHit() throws Exception {
+        DefaultApiSurfaceRegistry registry = registryOf("/items/{id}/parts/{part}");
+        String[] paths = {"/items/7/parts/b", "/items/7/parts/b?x=1&y=2", "/items/7/parts/b/", " /items/7/parts/b/?x=1", "items/7/parts/b"};
+        for (String path : paths) {
+            steady(registry, path, "WarmHit");
+        }
+        for (int round = 0; round < 3; round++) {
+            double[] bytes = new double[paths.length];
+            for (int i = 0; i < paths.length; i++) {
+                bytes[i] = measure(registry, paths[i], "Hit" + i + "R" + round);
+            }
+            report("parameterised hit: plain, query, trailing slash, white space and slash and query, no leading slash (round "
+                    + round + ")", bytes);
+            for (int i = 1; i < paths.length; i++) {
+                assertThat(bytes[i] - bytes[0]).as(paths[i]).isBetween(-ONE_BYTE, ONE_BYTE);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("ROADMAP: a request for a literal route allocates the same with 0, 5 and 20 parameterised routes of its method registered before it, and a 404 the same with 0 and 20")
+    void literalAndNotFoundFiguresIgnoreParameterisedRoutes() throws Exception {
+        int[] counts = {0, 5, 20};
+        for (int n : counts) {
+            steady(literalWithParameterised(n, false), "/api/open", "WarmLiteral" + n);
+            steady(literalWithParameterised(n, false), "/nothing/7", "WarmMissing" + n);
+        }
+        for (int round = 0; round < 3; round++) {
+            double[] literal = new double[counts.length];
+            double[] missing = new double[counts.length];
+            for (int k = 0; k < counts.length; k++) {
+                literal[k] = measure(literalWithParameterised(counts[k], false), "/api/open", "LiteralBefore" + counts[k] + "R" + round);
+                missing[k] = measure(literalWithParameterised(counts[k], false), "/nothing/7", "MissingWith" + counts[k] + "R" + round);
+            }
+            report("literal request after 0, 5, 20 parameterised routes (round " + round + ")", literal);
+            report("404 with 0, 5, 20 parameterised routes (round " + round + ")", missing);
+            assertThat(literal[1] - literal[0]).isBetween(-ONE_BYTE, ONE_BYTE);
+            assertThat(literal[2] - literal[0]).isBetween(-ONE_BYTE, ONE_BYTE);
+            assertThat(missing[1] - missing[0]).isBetween(-ONE_BYTE, ONE_BYTE);
+            assertThat(missing[2] - missing[0]).isBetween(-ONE_BYTE, ONE_BYTE);
         }
     }
 }

@@ -1,17 +1,15 @@
 package eu.exeris.caps.serviceboundarycore.api;
 
+import eu.exeris.caps.serviceboundarycore.internal.PathPattern;
 import eu.exeris.kernel.spi.http.HttpHandler;
 import eu.exeris.kernel.spi.http.HttpMethod;
 import eu.exeris.kernel.spi.http.RouteRequirement;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * An HTTP route definition on the service boundary.
@@ -35,15 +33,13 @@ import java.util.regex.Pattern;
  */
 public final class ApiSurfaceRoute {
 
-    private static final Pattern PARAM_PATTERN = Pattern.compile("\\{([a-zA-Z0-9_]+)\\}");
-
     private final HttpMethod method;
     private final String pathPattern;
     private final String actionName;
     private final List<RouteRequirement> requirements;
     private final HttpHandler handler;
 
-    private final Pattern compiledRegex;
+    private final PathPattern compiled;
     private final List<String> paramNames;
 
     /**
@@ -72,22 +68,8 @@ public final class ApiSurfaceRoute {
         }
         this.handler = Objects.requireNonNull(handler, "handler");
 
-        // Compile regex for parameterized path matching
-        List<String> names = new ArrayList<>();
-        Matcher m = PARAM_PATTERN.matcher(this.pathPattern);
-        StringBuilder regexBuilder = new StringBuilder("^");
-        int lastEnd = 0;
-        while (m.find()) {
-            regexBuilder.append(Pattern.quote(this.pathPattern.substring(lastEnd, m.start())));
-            regexBuilder.append("([^/]+)");
-            names.add(m.group(1));
-            lastEnd = m.end();
-        }
-        regexBuilder.append(Pattern.quote(this.pathPattern.substring(lastEnd)));
-        regexBuilder.append("$");
-
-        this.paramNames = Collections.unmodifiableList(names);
-        this.compiledRegex = Pattern.compile(regexBuilder.toString());
+        this.compiled = new PathPattern(this.pathPattern);
+        this.paramNames = this.compiled.names();
     }
 
     /** Creates a builder for a route. */
@@ -135,11 +117,10 @@ public final class ApiSurfaceRoute {
         if (path == null) {
             return false;
         }
-        String normalized = normalizePath(path);
         if (paramNames.isEmpty()) {
-            return this.pathPattern.equals(normalized);
+            return this.pathPattern.equals(normalizePath(path));
         }
-        return compiledRegex.matcher(normalized).matches();
+        return compiled.matches(path, path.length());
     }
 
     /** Extracts the path parameters from a path that matches this route. */
@@ -147,22 +128,21 @@ public final class ApiSurfaceRoute {
         if (path == null || paramNames.isEmpty()) {
             return Map.of();
         }
-        String normalized = normalizePath(path);
-        Matcher matcher = compiledRegex.matcher(normalized);
-        if (!matcher.matches()) {
+        Map<String, String> values = compiled.match(path, path.length());
+        if (values == null) {
             return Map.of();
         }
         Map<String, String> params = new LinkedHashMap<>();
-        for (int i = 0; i < paramNames.size(); i++) {
-            params.put(paramNames.get(i), matcher.group(i + 1));
+        for (String name : paramNames) {
+            params.put(name, values.get(name));
         }
         return Collections.unmodifiableMap(params);
     }
 
     /**
      * Trims whitespace, adds a leading slash and drops one trailing slash from a result longer than one
-     * character. {@code DefaultApiSurfaceRegistry} applies the same rule to a region of the request path when it
-     * matches a route without parameters, so a change here must be made there too.
+     * character. {@code PathPattern.region} applies the same rule to a region of the request path, without building
+     * the string, for every match made in place, so a change here must be made there too.
      */
     private static String normalizePath(String path) {
         String trimmed = path.trim();

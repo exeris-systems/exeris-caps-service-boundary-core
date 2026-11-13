@@ -23,25 +23,22 @@ No item.
 
 ### The admission path allocates on every request
 
-The organisation's rule is that a request path does not allocate, and the admission path of `handle()` still
-does. An allocation test in this repository, built on the kernel TCK's allocation monitor, measures a steady
+The organisation's rule is that a request path does not allocate, and the admission path of `handle()`
+allocates. An allocation test in this repository, built on the kernel TCK's allocation monitor, measures a steady
 non-zero allocation per `handle()` call for an anonymous route, and it pins that strict mode adds none; it does
 not pin the total.
 
-A literal route pays nothing only when it is registered before the parameterised routes. The match walks the routes
-in registration order, and every parameterised route of the same HTTP method scanned before the match runs its
-pattern, so a literal route registered after parameterised routes of its method pays for scanning each of them; one registered before them stops the
-walk first.
+A literal route does not pay for parameterised routes: the registry tries the routes without parameters first, so a
+request for one never tests a parameterised route, whatever the registration order.
 
-Removed already, for a route with no path parameter: the per-request copy and sort of the filters (the registry
-keeps one pre-sorted array and reads it once per request), the `RouteMatch` and `Optional` (the match is built
-at registration), the attribute map of the admission context (allocated on the first write), the request
-context rebuilt on every `requestContext()` call (built once per change of admission state, and without a
-builder), the seed context and the correlation id generated for every request (the id is generated when
-something first reads it, and is still `UUID.randomUUID()`), the iterator over a route's requirements, and the
-substring made for a query string or a trailing slash.
+For a route with no path parameter, `handle()` allocates none of these per request: a copy and sort of the filters
+(the registry keeps one pre-sorted array and reads it once per request), a `RouteMatch` and an `Optional` (the
+match is built at registration), the attribute map of the admission context (allocated on the first write), a
+request context per `requestContext()` call (one is built per change of admission state, without a builder), a
+seed context, a correlation id (it is generated when something first reads it, with `UUID.randomUUID()`), an
+iterator over a route's requirements, and a substring for a query string or a trailing slash.
 
-What a request for such a route still allocates, in `internal/`:
+What a request for such a route allocates, in `internal/`:
 
 - `DefaultAdmissionContext`, one per matched request, and a `DefaultRequestContext` for each change of admission
   state: at least one, because the handler runs in it, and another for each filter that runs after an earlier filter
@@ -58,15 +55,15 @@ What a request for such a route still allocates, in `internal/`:
 - A correlation id costs a `SecureRandom` draw, a `UUID` and its string at the first read, by design: the id
   stays unpredictable.
 
-A route with path parameters allocates more. `ApiSurfaceRoute.matchesPath` and `extractPathParams` run a regular
-expression and make a `Matcher` for each parameterised route scanned, the `LinkedHashMap` and the captured
-substrings of the extraction, and the copies of that map made by the `RouteMatch` and `MatchedHttpExchange`
-constructors; each parameterised route of the same HTTP method scanned before the match costs again, so the cost grows with the number
-of routes. Closing this needs matching that does not use a regular expression, an index from the path to the
-route, and a path-parameter holder that is lent rather than copied. The 404 and 405 answers allocate too: both
-build the set of allowed methods, and may cut a substring (when the request path has a query string) and run the
-pattern of each parameterised route of any method, because the walk tests every route, literal ones included; a 405 also builds the `Allow` value and the header list. Which of these
-the JIT removes varies, so this page does not count them.
+A route with path parameters that matches allocates more: one `String` for each distinct parameter name, because
+the request path is a `String` and `RouteMatch` exposes a `Map<String, String>`, and one immutable map that holds
+them (the map object and, from two parameters on, its table array), which `RouteMatch` and `MatchedHttpExchange`
+accept without a copy. A route with more than four distinct parameter names builds its map from entries and
+allocates more. A parameterised route that does not match allocates nothing, and none of the matching uses a
+regular expression. Closing the rest needs a path-parameter holder that is lent rather than copied, and an
+index from the path to the route. A 404 and a 405 answer allocate: both build the set of allowed methods,
+and a 405 also builds the `Allow` value and the header list. Which of these the JIT removes varies, so this
+page does not count them.
 
 None of the remaining items has an allocation figure in this page; the allocation test is to be extended to pin
 a total per scenario once the remaining sites are decided, with the `ScopedValue` bindings counted as the

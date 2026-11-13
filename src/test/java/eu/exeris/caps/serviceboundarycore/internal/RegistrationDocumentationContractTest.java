@@ -198,14 +198,16 @@ class RegistrationDocumentationContractTest {
     // ---- ROADMAP: the late literal route and the 404 and 405 path ----------------------------------------------
 
     @Test
-    @DisplayName("ROADMAP: a literal route registered after parameterised routes serves the same answers as one registered before them")
+    @DisplayName("ROADMAP and Javadoc: a literal route is tried before the parameterised routes, so it serves the same answers registered before or after them")
     void lateLiteralRouteSentences() throws IOException {
         assertThat(prose("ROADMAP.md"))
-                .contains("A literal route pays nothing only when it is registered before the parameterised routes.")
-                .contains("The match walks the routes in registration order, and every parameterised route of the same "
-                        + "HTTP method scanned before the match runs its pattern, so a literal route registered after "
-                        + "parameterised routes of its method pays for scanning each of them; one registered before "
-                        + "them stops the walk first.");
+                .contains("A literal route does not pay for parameterised routes: the registry tries the routes without parameters "
+                        + "first, so a request for one never tests a parameterised route, whatever the registration order.");
+        assertThat(prose(REGISTRY))
+                .contains("A request is matched against the routes without parameters first, which are compared in place with no "
+                        + "allocation, and a route with parameters is scanned only when none of them serves the path. A route without "
+                        + "parameters is exact, so it wins over a route with parameters whichever was registered first; among the "
+                        + "routes with parameters the first registered that matches wins.");
 
         for (boolean literalFirst : new boolean[] {true, false}) {
             DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
@@ -242,10 +244,8 @@ class RegistrationDocumentationContractTest {
     @Test
     @DisplayName("ROADMAP: the 404 and 405 answers; a 405 builds the Allow value of the allowed methods and carries it")
     void notFoundAndMethodNotAllowedSentences() throws IOException {
-        assertThat(prose("ROADMAP.md")).contains("The 404 and 405 answers allocate too: both build the set of allowed "
-                + "methods, and may cut a substring (when the request path has a query string) and run the pattern of "
-                + "each parameterised route of any method, because the walk tests every route, literal ones included; "
-                + "a 405 also builds the `Allow` value and the header list. Which of these the JIT removes varies, so "
+        assertThat(prose("ROADMAP.md")).contains("A 404 and a 405 answer allocate: both build the set of allowed "
+                + "methods, and a 405 also builds the `Allow` value and the header list. Which of these the JIT removes varies, so "
                 + "this page does not count them.");
 
         DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
