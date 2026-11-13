@@ -244,7 +244,7 @@ class RegistrationDocumentationContractTest {
     @Test
     @DisplayName("ROADMAP: the 404 and 405 answers; a 405 builds the Allow value of the allowed methods and carries it")
     void notFoundAndMethodNotAllowedSentences() throws IOException {
-        assertThat(prose("ROADMAP.md")).contains("The 404 and 405 answers still allocate: both build the set of allowed "
+        assertThat(prose("ROADMAP.md")).contains("A 404 and a 405 answer allocate: both build the set of allowed "
                 + "methods, and a 405 also builds the `Allow` value and the header list. Which of these the JIT removes varies, so "
                 + "this page does not count them.");
 

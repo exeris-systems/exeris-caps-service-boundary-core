@@ -53,17 +53,20 @@ class AllocationDocumentationTest {
     }
 
     @Test
-    @DisplayName("ROADMAP: the allocation item states what was removed and what remains, in the words the code supports")
+    @DisplayName("ROADMAP: the allocation item states what a request allocates and what it does not, in the words the code supports")
     void roadmapAllocationItem() throws IOException {
         String roadmap = normalised("ROADMAP.md");
         assertThat(roadmap)
                 .contains("### The admission path allocates on every request")
-                .contains("the registry keeps one pre-sorted array and reads it once per request")
-                .contains("the match is built at registration")
-                .contains("the attribute map of the admission context (allocated on the first write)")
-                .contains("built once per change of admission state, and without a builder")
-                .contains("the id is generated when something first reads it, and is still `UUID.randomUUID()`")
-                .contains("the substring made for a query string or a trailing slash")
+                .contains("The organisation's rule is that a request path does not allocate, and the admission path of `handle()` allocates.")
+                .contains("For a route with no path parameter, `handle()` allocates none of these per request: a copy and sort of the "
+                        + "filters (the registry keeps one pre-sorted array and reads it once per request), a `RouteMatch` and an "
+                        + "`Optional` (the match is built at registration), the attribute map of the admission context (allocated on the "
+                        + "first write), a request context per `requestContext()` call (one is built per change of admission state, "
+                        + "without a builder), a seed context, a correlation id (it is generated when something first reads it, with "
+                        + "`UUID.randomUUID()`), an iterator over a route's requirements, and a substring for a query string or a "
+                        + "trailing slash.")
+                .contains("What a request for such a route allocates, in `internal/`:")
                 .contains("`MatchedHttpExchange`, one per matched request")
                 .contains("at least one, because the handler runs in it")
                 .contains("and another for each filter that runs after an earlier filter changed the state")
@@ -76,7 +79,11 @@ class AllocationDocumentationTest {
                         + "accept without a copy.")
                 .contains("A route with more than four distinct parameter names builds its map from entries and allocates more.")
                 .contains("A parameterised route that does not match allocates nothing, and none of the matching uses a regular expression.")
-                .contains("Closing the rest needs a path-parameter holder that is lent rather than copied, and an index from the path to the route.");
+                .contains("Closing the rest needs a path-parameter holder that is lent rather than copied, and an index from the path to the route.")
+                .contains("A 404 and a 405 answer allocate: both build the set of allowed methods, and a 405 also builds the `Allow` "
+                        + "value and the header list. Which of these the JIT removes varies, so this page does not count them.")
+                .doesNotContain("still allocate")
+                .doesNotContain("Removed already");
     }
 
     @Test
