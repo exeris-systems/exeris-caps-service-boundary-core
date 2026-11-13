@@ -390,6 +390,39 @@ class AdmissionAllocationRelationsTest {
         }
     }
 
+    @Test
+    @DisplayName("ROADMAP: a miss that the surrogate pair boundary decides allocates nothing, and a hit across pairs allocates what a hit of two-character values outside Latin-1 does")
+    void surrogateBoundaryMissAllocatesNothing() throws Exception {
+        String h = "\uD83D";
+        String l = "\uDE00";
+        String[][] misses = {
+                {"/{a}" + l, "/" + h + l},
+                {"/" + h + "{a}", "/" + h + l + "x"},
+                {"/{a}{b}", "/" + h + l},
+                {"/{a}" + h + "{b}", "/x" + h + l},
+                {"/{a}" + l + "{b}", "/x" + h + l + "y"},
+                {"/{a}/{b}" + l, "/x/" + h + l}};
+        for (int round = 0; round < 3; round++) {
+            double[] figures = new double[misses.length];
+            for (int i = 0; i < misses.length; i++) {
+                PathPattern pattern = new PathPattern(misses[i][0]);
+                String path = misses[i][1];
+                assertThat(pattern.matches(path, path.length())).as("%s against %s", misses[i][0], path).isFalse();
+                figures[i] = Math.max(measureMatching(() -> pattern.match(path, path.length()), "PairMiss" + i + "R" + round),
+                        measureMatching(() -> pattern.matches(path, path.length()) ? "hit" : null, "PairMisses" + i + "R" + round));
+                assertThat(figures[i]).as("a miss for %s against %s", misses[i][0], path).isLessThan(ONE_BYTE);
+            }
+            report("a miss decided by a surrogate pair boundary, six patterns (round " + round + ")", figures);
+        }
+        PathPattern plain = new PathPattern("/{a}/{b}");
+        for (int round = 0; round < 3; round++) {
+            double ascii = measureMatching(() -> plain.match("/\u0141\u0142/\u0143\u0144", 6), "HitAsciiR" + round);
+            double pairs = measureMatching(() -> plain.match("/" + "\uD83D\uDE00" + "/" + "\uD83D\uDE00", 6), "HitPairsR" + round);
+            report("a hit of two values, two BMP characters each and a pair each (round " + round + ")", ascii, pairs);
+            assertThat(pairs - ascii).as("values of two chars outside Latin-1, as BMP characters and as pairs").isBetween(-ONE_BYTE, ONE_BYTE);
+        }
+    }
+
     private static DefaultApiSurfaceRegistry registryOf(String pattern) {
         DefaultApiSurfaceRegistry registry = new DefaultApiSurfaceRegistry();
         registry.registerRoute(Fixtures.open(pattern));
