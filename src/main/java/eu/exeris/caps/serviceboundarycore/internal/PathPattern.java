@@ -153,7 +153,8 @@ public final class PathPattern {
      * entries, which is the map object and, from two entries on, its table array. Each value is a substring
      * because the request path is a {@code String} and the exposed map holds {@code String}s; the map is the
      * immutable holder that {@code RouteMatch} and the exchange accept without a further copy. With more than
-     * four distinct names the map is built in a {@code HashMap} and copied, which costs that map's nodes and table and the copy.
+     * four distinct names the map is built in a {@code HashMap} and copied, which costs that map's nodes and
+     * table and the copy.
      */
     public Map<String, String> match(String path, int end) {
         long region = region(path, end);
