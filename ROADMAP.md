@@ -23,23 +23,22 @@ No item.
 
 ### The admission path allocates on every request
 
-The organisation's rule is that a request path does not allocate, and the admission path of `handle()` still
-does. An allocation test in this repository, built on the kernel TCK's allocation monitor, measures a steady
+The organisation's rule is that a request path does not allocate, and the admission path of `handle()`
+allocates. An allocation test in this repository, built on the kernel TCK's allocation monitor, measures a steady
 non-zero allocation per `handle()` call for an anonymous route, and it pins that strict mode adds none; it does
 not pin the total.
 
 A literal route does not pay for parameterised routes: the registry tries the routes without parameters first, so a
 request for one never tests a parameterised route, whatever the registration order.
 
-Removed already, for a route with no path parameter: the per-request copy and sort of the filters (the registry
-keeps one pre-sorted array and reads it once per request), the `RouteMatch` and `Optional` (the match is built
-at registration), the attribute map of the admission context (allocated on the first write), the request
-context rebuilt on every `requestContext()` call (built once per change of admission state, and without a
-builder), the seed context and the correlation id generated for every request (the id is generated when
-something first reads it, and is still `UUID.randomUUID()`), the iterator over a route's requirements, and the
-substring made for a query string or a trailing slash.
+For a route with no path parameter, `handle()` allocates none of these per request: a copy and sort of the filters
+(the registry keeps one pre-sorted array and reads it once per request), a `RouteMatch` and an `Optional` (the
+match is built at registration), the attribute map of the admission context (allocated on the first write), a
+request context per `requestContext()` call (one is built per change of admission state, without a builder), a
+seed context, a correlation id (it is generated when something first reads it, with `UUID.randomUUID()`), an
+iterator over a route's requirements, and a substring for a query string or a trailing slash.
 
-What a request for such a route still allocates, in `internal/`:
+What a request for such a route allocates, in `internal/`:
 
 - `DefaultAdmissionContext`, one per matched request, and a `DefaultRequestContext` for each change of admission
   state: at least one, because the handler runs in it, and another for each filter that runs after an earlier filter
@@ -62,7 +61,7 @@ them (the map object and, from two parameters on, its table array), which `Route
 accept without a copy. A route with more than four distinct parameter names builds its map from entries and
 allocates more. A parameterised route that does not match allocates nothing, and none of the matching uses a
 regular expression. Closing the rest needs a path-parameter holder that is lent rather than copied, and an
-index from the path to the route. The 404 and 405 answers still allocate: both build the set of allowed methods,
+index from the path to the route. A 404 and a 405 answer allocate: both build the set of allowed methods,
 and a 405 also builds the `Allow` value and the header list. Which of these the JIT removes varies, so this
 page does not count them.
 
