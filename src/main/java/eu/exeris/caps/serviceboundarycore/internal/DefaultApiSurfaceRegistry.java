@@ -94,6 +94,26 @@ import java.util.regex.Pattern;
  * {@code FROZEN} the field holds one array. An array is complete when read, because its elements are written
  * before the volatile write that publishes it.
  *
+ * <p><b>Invariant: the routes are read once per request, before the phase.</b> The routes a request can serve
+ * are one immutable table, held in the volatile field {@code routes}: every route in registration order, the
+ * routes without parameters, and the routes with parameters in registration order. Every mutator
+ * ({@code registerRoute}, {@code unregisterRoute}, {@code clear}) builds a new table and replaces the field
+ * with one volatile write, inside {@code mutationLock}; no table is modified after it is published. {@code handle}
+ * reads the field once, before it reads {@code phase}, and uses that table for the match and, when nothing
+ * matched, for the 404 or 405 decision. With two reads, a request for a method and path served by a route that is
+ * registered while the request runs could match against a table without that route and then find the route when
+ * it collects the methods allowed for the path, and be answered 405 with an {@code Allow} header naming its own
+ * method. With one table that cannot happen: if the table lacks the route the answer is 404, and if it has the
+ * route the request is matched. The ordering argument for removal is the one made for the filters: a removal in
+ * {@code TEARDOWN} writes {@code routes} after the {@code TEARDOWN} write, so a request whose table comes from
+ * such a removal reads {@code TEARDOWN} next and answers 503, and a request that does not read {@code TEARDOWN}
+ * holds a table that predates every removal made during teardown.
+ *
+ * <p>A request is matched against the routes without parameters first, which are compared in place with no
+ * allocation, and a route with parameters is scanned only when none of them serves the path. A route without
+ * parameters is exact, so it wins over a route with parameters whichever was registered first; among the routes
+ * with parameters the first registered that matches wins.
+ *
  * <p>The sort key is the phase and name a filter reported when it was registered. Both are read exactly once,
  * inside {@code registerFilter} before anything is changed, and kept in an immutable {@code RegisteredFilter};
  * sorting, the duplicate-name check and the record written for the registration use those captured values; the
@@ -666,6 +686,8 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
     @Override
     public void handle(HttpExchange exchange) {
         Objects.requireNonNull(exchange, "exchange");
+        // The table is read once, before the phase, and is the only read of the routes this request makes.
+        RouteTable table = routes;
         if (phase == Phase.TEARDOWN) {
             answer(exchange, HttpStatus.SERVICE_UNAVAILABLE, null, "registry is tearing down", null, null);
             return;
@@ -673,7 +695,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         String rawPath = exchange.request().path();
         HttpMethod method = exchange.request().method();
 
-        RouteMatch match = findMatch(routes, method, rawPath);
+        RouteMatch match = findMatch(table, method, rawPath);
         if (match != null) {
             MatchedHttpExchange effectiveExchange = new MatchedHttpExchange(exchange, match.pathParams());
             boolean handlerStarted = false;
@@ -715,7 +737,7 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         int query = rawPath.indexOf('?');
         int end = query >= 0 ? query : rawPath.length();
         Set<String> allowedMethods = new LinkedHashSet<>();
-        RegisteredRoute[] all = routes.all();
+        RegisteredRoute[] all = table.all();
         for (int i = 0; i < all.length; i++) {
             RegisteredRoute entry = all[i];
             if (servesPath(entry, rawPath, end)) {
