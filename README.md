@@ -114,6 +114,13 @@ the handler has no `AdmissionContext` and cannot change it.
   exchange itself after `execute` returns `true`.
 - **Unmatched requests skip admission.** A path or method that matches no route is answered 404 or 405
   before any filter runs, so rate limiting does not see them.
+- **Route matching.** A route without path parameters is exact and wins over a route with parameters, whichever
+  was registered first; among routes with parameters the first registered that matches wins. A `{name}`
+  segment stands for one or more characters other than `/`, without decoding. A request for a route without
+  parameters does not test any route with parameters. A request is matched, and answered 404 or 405 when it is
+  not, against one table of routes read once. Matching allocates nothing for a route that does not match; a
+  route with parameters that matches allocates one `String` per distinct parameter name and one immutable map
+  that holds them, and none of this uses a regular expression.
 
 ## Tenant membership filter
 
