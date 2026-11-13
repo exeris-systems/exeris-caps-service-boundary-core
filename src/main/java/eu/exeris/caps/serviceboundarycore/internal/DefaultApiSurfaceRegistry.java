@@ -146,9 +146,11 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
      * parameter map, holds no per-request state and is compared by value, so sharing one instance between
      * requests and threads is indistinguishable from building one per request.
      */
-    private record RegisteredRoute(ApiSurfaceRoute route, RouteMatch literalMatch) {
+    private record RegisteredRoute(ApiSurfaceRoute route, RouteMatch literalMatch, PathPattern pattern) {
         static RegisteredRoute of(ApiSurfaceRoute route) {
-            return new RegisteredRoute(route, route.paramNames().isEmpty() ? new RouteMatch(route, Map.of()) : null);
+            return route.paramNames().isEmpty()
+                    ? new RegisteredRoute(route, new RouteMatch(route, Map.of()), null)
+                    : new RegisteredRoute(route, null, new PathPattern(route.pathPattern()));
         }
     }
 
@@ -542,15 +544,8 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         }
         int query = path.indexOf('?');
         int end = query >= 0 ? query : path.length();
-        // A route with path parameters is matched by a regular expression and extracts its values as substrings,
-        // so it needs the path as a String of its own; that string is cut only when such a route is reached.
-        // A route without parameters only compares, and compares the region in place.
-        String cleanPath = query >= 0 ? null : path;
 
-        RegisteredRoute exactMatch = null;
-        ApiSurfaceRoute parameterizedMatch = null;
-        Map<String, String> extractedParams = null;
-
+        RouteMatch parameterised = null;
         for (RegisteredRoute entry : routeList) {
             ApiSurfaceRoute route = entry.route();
             if (!route.matchesMethod(method)) {
@@ -559,49 +554,39 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
             if (entry.literalMatch() != null) {
                 if (matchesLiteral(route.pathPattern(), path, end)) {
                     // Exact match takes precedence immediately
-                    exactMatch = entry;
-                    break;
+                    return entry.literalMatch();
                 }
-            } else {
-                if (cleanPath == null) {
-                    cleanPath = path.substring(0, end);
-                }
-                if (route.matchesPath(cleanPath) && parameterizedMatch == null) {
-                    parameterizedMatch = route;
-                    extractedParams = route.extractPathParams(cleanPath);
+            } else if (parameterised == null) {
+                Map<String, String> params = entry.pattern().match(path, end);
+                if (params != null) {
+                    parameterised = new RouteMatch(route, params);
                 }
             }
         }
+        return parameterised;
+    }
 
-        if (exactMatch != null) {
-            return exactMatch.literalMatch();
-        }
-        if (parameterizedMatch != null) {
-            return new RouteMatch(parameterizedMatch, extractedParams != null ? extractedParams : Map.of());
-        }
-        return null;
+    /** Whether the route's pattern matches {@code path[0, end)}, whatever its method. */
+    private static boolean servesPath(RegisteredRoute entry, String path, int end) {
+        return entry.literalMatch() != null
+                ? matchesLiteral(entry.route().pathPattern(), path, end)
+                : entry.pattern().matches(path, end);
     }
 
     /**
      * Whether {@code path[0, end)} is, after normalisation, the pattern of a route without parameters. The
-     * normalisation is the one {@link ApiSurfaceRoute#matchesPath} applies: surrounding whitespace (every
-     * character up to a space) is trimmed, a leading slash is added when missing, and one trailing slash is
-     * dropped from a result longer than one character. The comparison is made on the region, so no substring
-     * is created. Any change to that normalisation must be made in both places.
+     * normalisation is the one {@link ApiSurfaceRoute#matchesPath} applies and {@link PathPattern#region}
+     * implements: surrounding whitespace (every character up to a space) is trimmed, a leading slash is added
+     * when missing, and one trailing slash is dropped from a result longer than one character. The comparison
+     * is made on the region, so no substring is created.
      */
     private static boolean matchesLiteral(String pattern, String path, int end) {
-        int from = 0;
-        while (from < end && path.charAt(from) <= ' ') {
-            from++;
-        }
-        int to = end;
-        while (to > from && path.charAt(to - 1) <= ' ') {
-            to--;
-        }
-        boolean leadingSlash = to > from && path.charAt(from) == '/';
-        int length = (to - from) + (leadingSlash ? 0 : 1);
-        if (length > 1 && path.charAt(to - 1) == '/') {
-            length--;
+        long region = PathPattern.region(path, end);
+        int from = PathPattern.regionStart(region);
+        int length = PathPattern.regionLimit(region) - from;
+        boolean leadingSlash = PathPattern.startsWithSlash(path, region);
+        if (!leadingSlash) {
+            length++;
         }
         if (pattern.length() != length) {
             return false;
@@ -684,10 +669,11 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
         }
 
         // Check if path matches for any other HTTP method
-        String cleanPath = stripQueryString(rawPath);
+        int query = rawPath.indexOf('?');
+        int end = query >= 0 ? query : rawPath.length();
         Set<String> allowedMethods = new LinkedHashSet<>();
         for (RegisteredRoute entry : routeList) {
-            if (entry.route().matchesPath(cleanPath)) {
+            if (servesPath(entry, rawPath, end)) {
                 allowedMethods.add(entry.route().method().name());
             }
         }
@@ -757,10 +743,5 @@ public final class DefaultApiSurfaceRegistry implements ApiSurfaceRegistry, Requ
      */
     private static String shape(String pathPattern) {
         return PARAM_SEGMENT.matcher(pathPattern).replaceAll("{}");
-    }
-
-    private static String stripQueryString(String path) {
-        int q = path.indexOf('?');
-        return q >= 0 ? path.substring(0, q) : path;
     }
 }
