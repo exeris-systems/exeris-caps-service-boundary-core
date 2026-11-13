@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
  * <p>The pattern is split once, at construction, into {@code n + 1} literal texts around {@code n} parameters:
  * {@code literal[0] {p0} literal[1] {p1} ... {p(n-1)} literal[n]}. A parameter is written {@code {name}} with a
  * name of letters, digits and underscores; every other character, a stray brace included, is literal text.
- * Matching never uses {@code java.util.regex}; that is used only here, at construction, to find the parameters.
+ * Matching never uses {@code java.util.regex}; this class uses it only at construction, to find the parameters.
  *
  * <p>A parameter stands for one or more characters, none of them {@code /}, with no decoding, and is greedy: of
  * the ways to divide the path between the parameters and the literal texts, the match is the first one found by
@@ -153,7 +153,7 @@ public final class PathPattern {
      * entries, which is the map object and, from two entries on, its table array. Each value is a substring
      * because the request path is a {@code String} and the exposed map holds {@code String}s; the map is the
      * immutable holder that {@code RouteMatch} and the exchange accept without a further copy. With more than
-     * four distinct names the map is built from entries, which costs one entry object per name and an array.
+     * four distinct names the map is built in a {@code HashMap} and copied, which costs that map's nodes and table and the copy.
      */
     public Map<String, String> match(String path, int end) {
         long region = region(path, end);
