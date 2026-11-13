@@ -18,9 +18,19 @@ import java.util.regex.Pattern;
  *
  * <p>A parameter stands for one or more characters, none of them {@code /}, with no decoding, and is greedy: of
  * the ways to divide the path between the parameters and the literal texts, the match is the first one found by
- * giving each parameter in turn the longest value for which the rest still matches. That is the meaning of the
- * expression {@code ([^/]+)} for a parameter between quoted literal texts, anchored at both ends. A parameter
- * never ends inside a surrogate pair, because a code point is the unit of that expression.
+ * giving each parameter in turn the longest value for which the rest matches. That is the meaning of the
+ * expression {@code ^} + the quoted literal text + {@code ([^/]+)} + ... + {@code $}, whose unit is the code
+ * point. Every place where a literal text meets a parameter value (the start of the pattern, a literal text
+ * before and after a value, two adjacent values) is therefore a code point boundary of the path: it lies
+ * between two code points, never between the two halves of a surrogate pair. A literal text is compared to the
+ * path char by char between two such boundaries, so a lone surrogate in a literal text matches only a lone
+ * surrogate in the path, and a value neither starts nor ends inside a pair. The end of the path is a boundary.
+ *
+ * <p>The time to match a request is polynomial in the length of the path segment that the parameters share. A
+ * route with one parameter in each segment is linear in the path. A route whose parameters can share text,
+ * that is parameters that are adjacent or are separated by a literal text that may also occur inside a value,
+ * tries the divisions of that text between them: the time grows with a degree up to the number of such
+ * parameters. A route author keeps it small by writing one parameter per segment.
  *
  * <p>The path is normalised before it is compared: surrounding white space (every character up to a space) is
  * trimmed, a leading slash is added when missing and one trailing slash is dropped from a result longer than one
@@ -207,7 +217,8 @@ public final class PathPattern {
         int skipped = startsWithSlash(path, region) ? 0 : 1;
         String first = literals[0];
         int length = first.length() - skipped;
-        if (from + length > limit || !path.regionMatches(from, first, skipped, length)) {
+        if (from + length > limit || !path.regionMatches(from, first, skipped, length)
+                || splitsPair(path, limit, from + length)) {
             return false;
         }
         return matchParameters(path, limit, 0, from + length);
@@ -224,8 +235,7 @@ public final class PathPattern {
         String next = literals[k + 1];
         int length = next.length();
         for (int stop = valueLimit(path, limit, pos); stop > pos; stop--) {
-            if (stop + length <= limit && !splitsPair(path, pos, stop)
-                    && path.regionMatches(stop, next, 0, length)
+            if (literalAt(path, limit, stop, next)
                     && matchParameters(path, limit, k + 1, stop + length)) {
                 return true;
             }
@@ -241,8 +251,7 @@ public final class PathPattern {
         String next = literals[k + 1];
         int length = next.length();
         for (int stop = valueLimit(path, limit, pos); stop > pos; stop--) {
-            if (stop + length <= limit && !splitsPair(path, pos, stop)
-                    && path.regionMatches(stop, next, 0, length)
+            if (literalAt(path, limit, stop, next)
                     && matchParameters(path, limit, k + 1, stop + length)) {
                 return stop;
             }
@@ -256,10 +265,26 @@ public final class PathPattern {
         return slash < 0 || slash > limit ? limit : slash;
     }
 
-    /** Whether ending a value that starts at {@code from} at {@code stop} would cut a surrogate pair in two. */
-    private static boolean splitsPair(String path, int from, int stop) {
-        return stop > from && stop < path.length()
-                && Character.isHighSurrogate(path.charAt(stop - 1))
-                && Character.isLowSurrogate(path.charAt(stop));
+    /**
+     * Whether {@code literal} occurs in {@code path} at {@code at} within {@code limit}, between two code point
+     * boundaries: the value before it ends at {@code at} and the value after it starts where it ends.
+     */
+    private static boolean literalAt(String path, int limit, int at, String literal) {
+        int end = at + literal.length();
+        return end <= limit
+                && !splitsPair(path, limit, at)
+                && path.regionMatches(at, literal, 0, literal.length())
+                && !splitsPair(path, limit, end);
+    }
+
+    /**
+     * Whether {@code index}, inside the path that ends at {@code limit}, is between the two halves of a
+     * surrogate pair. The start and the end of the path are boundaries; the characters before the path are
+     * white space.
+     */
+    private static boolean splitsPair(String path, int limit, int index) {
+        return index > 0 && index < limit
+                && Character.isHighSurrogate(path.charAt(index - 1))
+                && Character.isLowSurrogate(path.charAt(index));
     }
 }
